@@ -1,9 +1,7 @@
-import ears
-import brain
-import voice
+from bart import ears, brain, voice
 import keyboard
 import time
-from text_utils import normalize_command
+from bart.text_utils import normalize_command
 
 is_running = True
 

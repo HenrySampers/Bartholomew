@@ -3,11 +3,11 @@ import warnings
 warnings.simplefilter("ignore", FutureWarning)
 
 from dotenv import load_dotenv
-from llm_providers import BrainProviderChain
-from memory import MemoryStore
-from safety import confirmation_prompt, is_cancellation, is_confirmation
-from text_utils import normalize_command
-from tools import ToolRegistry
+from .llm_providers import BrainProviderChain
+from .memory import MemoryStore
+from .safety import confirmation_prompt, is_cancellation, is_confirmation
+from .text_utils import normalize_command
+from .tools import ToolRegistry
 
 load_dotenv()
 

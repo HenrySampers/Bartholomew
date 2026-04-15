@@ -7,8 +7,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
-from config_loader import BartConfig
-from text_utils import normalize_command
+
+from .config_loader import BartConfig
+from .text_utils import normalize_command
 
 
 @dataclass(frozen=True)
