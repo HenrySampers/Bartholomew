@@ -7,7 +7,8 @@ import functools
 from .tool_types import Tool
 from .config_loader import BartConfig
 from .memory import MemoryStore
-from .skills import system_tools, app_tools, memory_tools, note_tools, config_tools
+from .skills import (system_tools, app_tools, memory_tools, note_tools,
+                     config_tools, weather_tools, timer_tools, search_tools, spotify_tools)
 
 
 class ToolRegistry:
@@ -99,6 +100,24 @@ class ToolRegistry:
         self._reg("get_clipboard", "Read the clipboard.", system_tools.get_clipboard)
         self._reg("set_clipboard", "Write text to the clipboard. Args: text", system_tools.set_clipboard)
 
+        # --- Weather ---
+        self._reg("weather", "Get current weather.", weather_tools.weather)
+
+        # --- Timers ---
+        self._reg("set_timer", "Set a timer. Args: seconds, label", timer_tools.set_timer)
+        self._reg("cancel_timer", "Cancel a timer. Args: label (optional)", timer_tools.cancel_timer)
+        self._reg("list_timers", "List active timers.", timer_tools.list_timers)
+
+        # --- File search ---
+        self._reg("file_search", "Search for files by name. Args: query", search_tools.file_search)
+
+        # --- Spotify ---
+        self._reg("spotify_current", "Show what's playing on Spotify.", spotify_tools.spotify_current)
+        self._reg("spotify_play_pause", "Play or pause Spotify.", spotify_tools.spotify_play_pause)
+        self._reg("spotify_next", "Skip to next Spotify track.", spotify_tools.spotify_next)
+        self._reg("spotify_prev", "Go back a Spotify track.", spotify_tools.spotify_prev)
+        self._reg("spotify_search_play", "Search and play a song on Spotify. Args: query", spotify_tools.spotify_search_play)
+
         # --- Voice config editing ---
         self._reg("add_app", "Teach Bart a new application. Args: name, target", self._bind(config_tools.add_app, cfg))
         self._reg("remove_app", "Remove an application. Args: name", self._bind(config_tools.remove_app, cfg))
@@ -113,9 +132,9 @@ class ToolRegistry:
 
     def execute(self, name, args):
         if name not in self.tools:
-            return f"I do not have a tool called {name!r}, Sir."
+            return f"yo that tool doesn't exist bro: {name!r}"
         if not isinstance(args, dict):
-            return "The tool arguments were malformed, Sir."
+            return "tool args were malformed bro."
         try:
             return self.tools[name].handler(**args)
         except TypeError as exc:

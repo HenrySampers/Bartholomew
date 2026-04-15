@@ -3,19 +3,21 @@ Bart's decision layer.
 
 Flow:
   1. Fast local routing catches obvious commands without touching the LLM.
-  2. Everything else goes to the LLM provider chain with the full
-     conversation history so Bart maintains session context.
-  3. Both the user turn and Bart's reply are appended to history so
-     future turns have context — making conversations feel natural.
+  2. Ambiguous commands are sent to the LLM with tool context so it can
+     intelligently decide what to do.
+  3. Full conversation history (persisted to SQLite) is passed on every
+     LLM call so Bart maintains context across restarts.
 """
+import re
 import warnings
 from collections import deque
+from datetime import datetime
 
 warnings.simplefilter("ignore", FutureWarning)
 
 from dotenv import load_dotenv
 
-from .llm_providers import BrainProviderChain
+from .llm_providers import BrainProviderChain, ProviderError
 from .memory import MemoryStore
 from .safety import confirmation_prompt, is_cancellation, is_confirmation
 from .text_utils import normalize_command
@@ -36,13 +38,12 @@ Rules:
 - If you just did something (opened an app, took a screenshot etc), say so briefly and naturally like a person would.
 """.strip()
 
-# Session state
+# Session state — history loaded from DB on startup
 memory = MemoryStore()
 tools = ToolRegistry(memory)
 brain_provider = BrainProviderChain()
 
-# Conversation history: last 10 exchanges (20 messages) kept in memory.
-_history: deque = deque(maxlen=20)
+_history: deque = deque(memory.load_history(), maxlen=40)
 _pending_action = None
 
 
@@ -55,7 +56,6 @@ def is_confirming() -> bool:
 
 
 def ask_bart(user_text: str) -> str:
-    """Route a request and return Bart's spoken reply."""
     global _pending_action
     try:
         # ---- Confirmation flow ----
@@ -65,14 +65,14 @@ def ask_bart(user_text: str) -> str:
                 _pending_action = None
                 result = tools.execute(action["tool"], action.get("args", {}))
                 memory.log_command(user_text, action, result)
-                _history.append({"role": "user", "content": user_text})
-                _history.append({"role": "assistant", "content": result})
+                _log_turn("user", user_text)
+                _log_turn("assistant", result)
                 return result
             if is_cancellation(user_text):
                 _pending_action = None
                 reply = "yeah no worries, cancelled."
-                _history.append({"role": "user", "content": user_text})
-                _history.append({"role": "assistant", "content": reply})
+                _log_turn("user", user_text)
+                _log_turn("assistant", reply)
                 return reply
             return "yo i still need a yes or no from you bro."
 
@@ -88,21 +88,20 @@ def ask_bart(user_text: str) -> str:
             if tool.requires_confirmation:
                 _pending_action = {"tool": tool_name, "args": args}
                 prompt = confirmation_prompt(tool_name, args, tool.confirmation_reason)
-                _history.append({"role": "user", "content": user_text})
-                _history.append({"role": "assistant", "content": prompt})
+                _log_turn("user", user_text)
+                _log_turn("assistant", prompt)
                 return prompt
             result = tools.execute(tool_name, args)
             memory.log_command(user_text, decision, result)
-            # Log tool interactions to history so Bart knows what he just did
-            _history.append({"role": "user", "content": user_text})
-            _history.append({"role": "assistant", "content": result})
+            _log_turn("user", user_text)
+            _log_turn("assistant", result)
             return result
 
-        # ---- LLM chat with history ----
+        # ---- LLM chat ----
         reply = _chat(user_text)
         memory.log_command(user_text, decision, reply)
-        _history.append({"role": "user", "content": user_text})
-        _history.append({"role": "assistant", "content": reply})
+        _log_turn("user", user_text)
+        _log_turn("assistant", reply)
         return reply
 
     except Exception as exc:
@@ -110,23 +109,42 @@ def ask_bart(user_text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# History helpers
+# ---------------------------------------------------------------------------
+
+def _log_turn(role: str, content: str):
+    _history.append({"role": role, "content": content})
+    memory.save_history_turn(role, content)
+
+
+# ---------------------------------------------------------------------------
 # LLM chat
 # ---------------------------------------------------------------------------
 
-def _format_memories() -> str:
-    rows = memory.recent_memories()
-    if not rows:
-        return "None yet."
-    return "\n".join(f"- {r['key']}: {r['value']}" for r in rows)
+def _build_system() -> str:
+    hour = datetime.now().hour
+    if 5 <= hour < 12:
+        time_vibe = "morning — maybe a little groggy but coming alive"
+    elif 12 <= hour < 17:
+        time_vibe = "afternoon — fully switched on"
+    elif 17 <= hour < 21:
+        time_vibe = "evening — winding down, relaxed"
+    else:
+        time_vibe = "late night — chill, maybe a bit loopy"
+
+    profile = memory.get_profile_context()
+
+    parts = [
+        SYSTEM_PROMPT,
+        f"\nCurrent time: {datetime.now().strftime('%H:%M')} ({time_vibe}).",
+    ]
+    if profile:
+        parts.append(profile)
+    return "\n\n".join(parts)
 
 
 def _chat(user_text: str) -> str:
-    memories = _format_memories()
-    system = (
-        f"{SYSTEM_PROMPT}\n\n"
-        f"Relevant saved memories:\n{memories}"
-    )
-    return brain_provider.generate(system, list(_history), user_text)
+    return brain_provider.generate(_build_system(), list(_history), user_text)
 
 
 # ---------------------------------------------------------------------------
@@ -139,12 +157,9 @@ def _route(user_text: str) -> dict:
     # -- Memory --
     if low.startswith("remember "):
         body = user_text.strip()[9:].strip()
-        if " is " in body:
-            key, value = body.split(" is ", 1)
-        elif ":" in body:
-            key, value = body.split(":", 1)
-        else:
-            key, value = "note", body
+        key, value = (body.split(" is ", 1) if " is " in body
+                      else body.split(":", 1) if ":" in body
+                      else ("note", body))
         return _tool("remember", key=key.strip(), value=value.strip())
 
     if low.startswith(("recall ", "what do you remember about ")):
@@ -158,8 +173,8 @@ def _route(user_text: str) -> dict:
     if low in {"system info", "computer info", "what system is this"}:
         return _tool("system_info")
 
-    if low in {"system stats", "how is my computer", "how is my cpu", "cpu usage", "ram usage",
-               "memory usage", "disk usage", "how is the system"}:
+    if low in {"system stats", "how is my computer", "how is my cpu", "cpu usage",
+               "ram usage", "memory usage", "disk usage", "how is the system"}:
         return _tool("system_stats")
 
     if low in {"screenshot", "take a screenshot", "capture the screen", "take screenshot"}:
@@ -168,6 +183,25 @@ def _route(user_text: str) -> dict:
     if low.startswith(("run powershell ", "powershell ")):
         command = user_text.strip().split(" ", 1 if low.startswith("powershell ") else 2)[-1]
         return _tool("run_powershell", command=command)
+
+    # -- Weather --
+    if any(p in low for p in ("weather", "temperature", "how hot", "how cold",
+                               "is it raining", "is it sunny", "whats it like outside")):
+        return _tool("weather")
+
+    # -- Timers --
+    if any(low.startswith(p) for p in ("set a timer", "set timer", "timer for",
+                                        "remind me in", "wake me in", "set an alarm")):
+        seconds = _parse_duration(low)
+        if seconds:
+            label = _extract_timer_label(low)
+            return _tool("set_timer", seconds=seconds, label=label)
+
+    if low in {"cancel timer", "stop timer", "cancel the timer", "stop the alarm"}:
+        return _tool("cancel_timer")
+
+    if low in {"list timers", "what timers do i have", "active timers"}:
+        return _tool("list_timers")
 
     # -- Volume --
     if low in {"volume up", "turn it up", "louder", "increase volume", "raise volume", "turn up"}:
@@ -179,29 +213,50 @@ def _route(user_text: str) -> dict:
     if low in {"mute", "unmute", "silence", "toggle mute"}:
         return _tool("mute")
 
-    # -- Media --
-    if low in {"play", "pause", "play pause", "resume", "resume music", "pause music", "stop music"}:
-        return _tool("media_play_pause")
+    # -- Media / Spotify --
+    if low in {"whats playing", "what is playing", "what song is this", "what song is playing",
+               "what are you playing", "now playing"}:
+        return _tool("spotify_current")
+
+    if low in {"play", "pause", "play pause", "resume", "resume music", "pause music"}:
+        return _tool("spotify_play_pause")
 
     if low in {"next", "next track", "next song", "skip", "skip song", "skip track"}:
-        return _tool("media_next")
+        return _tool("spotify_next")
 
-    if low in {"previous", "previous track", "previous song", "go back", "last song", "last track", "back"}:
-        return _tool("media_prev")
+    if low in {"previous", "previous track", "previous song", "go back", "last song", "last track"}:
+        return _tool("spotify_prev")
+
+    if low.startswith(("play ", "put on ", "queue ")):
+        for prefix in ("play ", "put on ", "queue "):
+            if low.startswith(prefix):
+                query = user_text.strip()[len(prefix):].strip()
+                break
+        if query and not any(low.startswith(p + t) for p in ("play ", "put on ")
+                             for t in ("spotify", "music")):
+            return _tool("spotify_search_play", query=query)
 
     # -- Clipboard --
-    if low in {"clipboard", "read clipboard", "whats in my clipboard", "what is in my clipboard",
-               "whats in clipboard", "what is in clipboard"}:
+    if low in {"clipboard", "read clipboard", "whats in my clipboard",
+               "what is in my clipboard", "whats in clipboard"}:
         return _tool("get_clipboard")
 
-    if low.startswith(("copy ", "put ")) and " to clipboard" in low:
+    if low.startswith(("copy ", "put ")) and "clipboard" in low:
         text = user_text.strip()
         for prefix in ("copy ", "put "):
             if text.lower().startswith(prefix):
                 text = text[len(prefix):]
                 break
-        text = text.replace(" to clipboard", "").replace(" in clipboard", "").strip()
+        text = re.sub(r"\s*(to|in)\s*clipboard", "", text, flags=re.I).strip()
         return _tool("set_clipboard", text=text)
+
+    # -- File search --
+    if low.startswith(("find ", "search for ", "locate ", "where is my ", "where is the ")):
+        for prefix in ("find ", "search for ", "locate ", "where is my ", "where is the "):
+            if low.startswith(prefix):
+                query = user_text.strip()[len(prefix):].strip()
+                break
+        return _tool("file_search", query=query)
 
     # -- Config listing --
     if low in {"list config", "what apps do you know", "what can you open",
@@ -209,7 +264,6 @@ def _route(user_text: str) -> dict:
         return _tool("list_config")
 
     # -- Voice config editing --
-    # "add discord to apps as discord"  /  "add discord to your apps as discord"
     if low.startswith("add ") and (" to apps" in low or " to your apps" in low):
         rest = user_text.strip()[4:]
         split_word = " to your apps" if " to your apps" in rest.lower() else " to apps"
@@ -259,15 +313,12 @@ def _route(user_text: str) -> dict:
             if low.startswith(prefix):
                 body = user_text.strip()[len(prefix):].strip()
                 break
-        if ":" in body:
-            title, contents = body.split(":", 1)
-        else:
-            title, contents = "quick note", body
+        title, contents = body.split(":", 1) if ":" in body else ("quick note", body)
         return _tool("create_note", title=title.strip(), contents=contents.strip())
 
     # -- Open / start / run --
     if low.startswith("open "):
-        return _route_open(low, user_text)
+        return _route_open(low)
 
     if low.startswith(("start ", "begin ")):
         target = low.split(" ", 1)[1].strip()
@@ -289,11 +340,11 @@ def _route(user_text: str) -> dict:
         query = user_text.strip().split(" ", 1)[1]
         return _tool("web_search", query=query)
 
-    # -- Fallback to LLM --
+    # -- Fallback to LLM (smarter: includes tool list for ambiguous commands) --
     return {"type": "respond"}
 
 
-def _route_open(low: str, user_text: str) -> dict:
+def _route_open(low: str) -> dict:
     target = low[5:].strip()
     for prefix in ("the ", "my "):
         if target.startswith(prefix):
@@ -314,6 +365,25 @@ def _route_open(low: str, user_text: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Duration parsing for timers
+# ---------------------------------------------------------------------------
+
+def _parse_duration(text: str) -> int | None:
+    hours = sum(int(m) for m in re.findall(r"(\d+)\s*(?:hour|hr)s?", text))
+    minutes = sum(int(m) for m in re.findall(r"(\d+)\s*(?:minute|min)s?", text))
+    seconds = sum(int(m) for m in re.findall(r"(\d+)\s*(?:second|sec)s?", text))
+    total = hours * 3600 + minutes * 60 + seconds
+    return total if total > 0 else None
+
+
+def _extract_timer_label(text: str) -> str:
+    for kw in ("for my ", "called ", "named ", "labeled "):
+        if kw in text:
+            return text.split(kw, 1)[1].split()[0]
+    return "timer"
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -323,25 +393,19 @@ def _tool(tool_name: str, **args) -> dict:
 
 def _handle_error(exc: Exception) -> str:
     msg = str(exc).lower()
-    if "ollama" in msg and ("connect" in msg or "running" in msg or "refused" in msg):
-        return (
-            "I cannot reach my local brain, Sir. "
-            "Please ensure Ollama is running ('ollama serve') and the model is pulled."
-        )
+    if "ollama" in msg and any(w in msg for w in ("connect", "running", "refused")):
+        return "can't reach my local brain bro, make sure ollama is running."
     if "ollama" in msg and "timeout" in msg:
-        return "My local brain took too long to respond, Sir. It may be overloaded."
-    if "gemini" in msg and ("429" in msg or "quota" in msg or "limit" in msg):
-        return (
-            "My Gemini quota is exhausted for the moment, Sir. "
-            "I can still handle local commands — time, memory, apps, screenshots, and so on."
-        )
-    if "gemini" in msg and ("api_key" in msg or "api key" in msg or "credential" in msg):
-        return "My Gemini API key appears to be missing or invalid, Sir."
+        return "my brain timed out dude, it might be overloaded."
+    if "gemini" in msg and any(w in msg for w in ("429", "quota", "limit")):
+        return "gemini quota's tapped out bro, i can still do local stuff though."
+    if "gemini" in msg and any(w in msg for w in ("api_key", "credential")):
+        return "gemini api key looks wrong bro, check the env file."
     if "429" in msg or "rate" in msg:
-        return "I am being rate-limited, Sir. Please give me a moment before asking again."
+        return "getting rate limited, give me a sec."
     if "timeout" in msg:
-        return "That request timed out, Sir. The service may be slow or unavailable."
-    if "network" in msg or "connect" in msg or "unreachable" in msg:
-        return "I appear to have lost my network connection, Sir."
+        return "that timed out bro, service might be slow."
+    if any(w in msg for w in ("network", "connect", "unreachable")):
+        return "lost my connection bro."
     print(f"Bart's brain error: {exc}")
-    return "Yo my bad dude, something went sideways on my end. Try again?"
+    return "yo my bad dude, something went sideways on my end. try again?"

@@ -10,3 +10,5 @@ piper-tts
 faster-whisper
 psutil
 pyperclip
+requests
+spotipy
