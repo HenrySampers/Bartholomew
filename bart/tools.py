@@ -138,9 +138,9 @@ class ToolRegistry:
         try:
             return self.tools[name].handler(**args)
         except TypeError as exc:
-            return f"The tool arguments were not quite right, Sir: {exc}"
+            return f"tool args were off bro: {exc}"
         except Exception as exc:
-            return f"The tool encountered a problem, Sir: {exc}"
+            return f"tool hit a problem bro: {exc}"
 
     # ------------------------------------------------------------------
     # start_routine needs access to execute(), so it lives here
@@ -149,13 +149,13 @@ class ToolRegistry:
     def _start_routine(self, name):
         routine = self.config.get_routine(name)
         if not routine:
-            return f"I do not have a routine called {name!r} configured, Sir."
+            return f"don't have a routine called {name!r} bro."
         results = []
         for step in routine:
             tool_name = step.get("tool")
             args = step.get("args", {})
             if tool_name == "start_routine":
-                results.append("Skipped a nested routine to avoid recursion, Sir.")
+                results.append("skipped a nested routine to avoid recursion bro.")
                 continue
             results.append(self.execute(tool_name, args))
         return "\n".join(results)

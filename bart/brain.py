@@ -117,6 +117,20 @@ def _log_turn(role: str, content: str):
     memory.save_history_turn(role, content)
 
 
+def mine_session_to_palace():
+    """
+    Mine the current session's conversation history into MemPalace.
+    Call this at shutdown so Bart's long-term memory grows over time.
+    """
+    if not _history:
+        return
+    try:
+        from .palace import mine_conversation
+        mine_conversation(list(_history))
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # LLM chat
 # ---------------------------------------------------------------------------
@@ -132,14 +146,25 @@ def _build_system() -> str:
     else:
         time_vibe = "late night — chill, maybe a bit loopy"
 
-    profile = memory.get_profile_context()
-
     parts = [
         SYSTEM_PROMPT,
         f"\nCurrent time: {datetime.now().strftime('%H:%M')} ({time_vibe}).",
     ]
+
+    # MemPalace wake-up context (semantic memory snapshot, cached 5 min)
+    try:
+        from .palace import wake_up_context
+        palace_ctx = wake_up_context()
+        if palace_ctx:
+            parts.append(f"Memory palace context:\n{palace_ctx}")
+    except Exception:
+        pass
+
+    # SQLite profile fallback (recent key-value memories)
+    profile = memory.get_profile_context()
     if profile:
         parts.append(profile)
+
     return "\n\n".join(parts)
 
 

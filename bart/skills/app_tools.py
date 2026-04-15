@@ -66,68 +66,68 @@ def _find_spotify_exe():
 def open_app(config, name):
     target = config.get_app(name) or name.strip()
     if not target:
-        return "I need an application name, Sir."
+        return "need an app name bro."
     normalized = normalize_command(name)
     if normalized == "spotify":
         exe = _find_spotify_exe()
         if exe:
             _launch_target(exe)
-            return "Opening Spotify, Sir."
+            return "opening Spotify."
         shortcut = _find_start_menu_shortcut("spotify")
         if shortcut:
             os.startfile(shortcut)
-            return "Opening Spotify, Sir."
+            return "opening Spotify."
     shortcut = _find_start_menu_shortcut(normalized)
     if shortcut:
         os.startfile(shortcut)
     else:
         _launch_target(target)
-    return f"Opening {name}, Sir."
+    return f"opening {name}."
 
 
 def open_folder(config, name):
     target = config.get_folder(name) or name.strip()
     if not target:
-        return "I need a folder name, Sir."
+        return "need a folder name bro."
     path = Path(target).expanduser()
     if not path.exists():
-        return f"I cannot find that folder, Sir: {path}"
+        return f"can't find that folder bro: {path}"
     os.startfile(path)
-    return f"Opening {name}, Sir."
+    return f"opening {name}."
 
 
 def open_project(config, name):
     project = config.get_project(name)
     if not project:
-        return f"I do not have a project called {name!r} configured, Sir."
+        return f"don't have a project called {name!r} bro."
     command = project.get("open_command")
     path = project.get("path")
     if command:
         subprocess.Popen(command, cwd=path or None, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=True)
-        return f"Opening the {name} project, Sir."
+        return f"opening the {name} project."
     if path and Path(path).exists():
         os.startfile(path)
-        return f"Opening the {name} project folder, Sir."
-    return f"The {name} project config is missing a valid path or open command, Sir."
+        return f"opening the {name} project folder."
+    return f"the {name} project config is missing a path or open command bro."
 
 
 def open_named_website(config, name):
     url = config.get_website(name)
     if not url:
-        return f"I do not have a website called {name!r} configured, Sir."
+        return f"don't have a website called {name!r} bro."
     return open_website(url)
 
 
 def run_project(config, name):
     project = config.get_project(name)
     if not project:
-        return f"I do not have a project called {name!r} configured, Sir."
+        return f"don't have a project called {name!r} bro."
     command = project.get("run_command")
     path = project.get("path")
     if not command:
-        return f"The {name} project has no run command configured, Sir."
+        return f"the {name} project has no run command configured bro."
     subprocess.Popen(command, cwd=path or None, shell=True)
-    return f"Starting the {name} project, Sir."
+    return f"starting the {name} project."
 
 
 def list_config(config):
@@ -137,18 +137,18 @@ def list_config(config):
 def open_website(url):
     cleaned = url.strip()
     if not cleaned:
-        return "I need a website address, Sir."
+        return "need a website address bro."
     if not cleaned.startswith(("http://", "https://")):
         cleaned = f"https://{cleaned}"
     try:
         _launch_target(cleaned)
     except Exception:
         webbrowser.open(cleaned)
-    return f"Opening {cleaned}, Sir."
+    return f"opening {cleaned}."
 
 
 def web_search(query):
     if not query.strip():
-        return "I need a search query, Sir."
+        return "need a search query bro."
     webbrowser.open(f"https://www.google.com/search?q={query.replace(' ', '+')}")
-    return f"Searching for {query}, Sir."
+    return f"searching for {query}."

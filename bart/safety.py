@@ -32,8 +32,8 @@ def is_cancellation(text):
 
 
 def confirmation_prompt(tool_name, args, reason):
-    readable_args = ", ".join(f"{key}={value!r}" for key, value in args.items()) or "no arguments"
+    readable_args = ", ".join(f"{key}={value!r}" for key, value in args.items()) or "no args"
     return (
-        f"Sir, that requires confirmation. Tool: {tool_name}. "
-        f"Details: {readable_args}. Reason: {reason}. Shall I proceed?"
+        f"yo heads up, that needs a confirm. tool: {tool_name}, "
+        f"details: {readable_args}. reason: {reason}. you good with that?"
     )

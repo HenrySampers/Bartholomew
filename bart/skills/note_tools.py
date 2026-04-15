@@ -12,19 +12,19 @@ def create_note(title, contents):
     path = _note_path(title)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"# {title.strip()}\n\n{contents.strip()}\n", encoding="utf-8")
-    return f"Note saved, Sir."
+    return f"note saved bro."
 
 
 def list_notes():
     folder = Path("data") / "notes"
     if not folder.exists():
-        return "There are no notes yet, Sir."
+        return "no notes yet bro."
     notes = sorted(p.stem.replace("_", " ") for p in folder.glob("*.md"))
-    return ("Notes: " + ", ".join(notes)) if notes else "There are no notes yet, Sir."
+    return ("notes: " + ", ".join(notes)) if notes else "no notes yet bro."
 
 
 def read_note(title):
     path = _note_path(title)
     if not path.exists():
-        return f"I cannot find a note called {title!r}, Sir."
+        return f"can't find a note called {title!r} bro."
     return path.read_text(encoding="utf-8")[:2000]

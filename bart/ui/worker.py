@@ -152,6 +152,7 @@ class BartWorker(QThread):
         if len(normalized) >= 3 and normalized in _SHUTDOWN_PHRASES:
             self._running = False
             self._set_state(BartState.SPEAKING)
+            brain.mine_session_to_palace()
             voice.speak_blocking("later dude.")
             self.shutdown_complete.emit()
             return

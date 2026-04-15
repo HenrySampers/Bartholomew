@@ -8,7 +8,7 @@ config is bound by ToolRegistry via functools.partial.
 def add_app(config, name, target):
     config.data.setdefault("apps", {})[name.strip().lower()] = target.strip()
     config.save()
-    return f"Understood, Sir. I will remember {name} as an application."
+    return f"locked in bro, {name} is now an app."
 
 
 def remove_app(config, name):
@@ -16,14 +16,14 @@ def remove_app(config, name):
     if key in config.data.get("apps", {}):
         del config.data["apps"][key]
         config.save()
-        return f"Done, Sir. {name} has been removed from my applications."
-    return f"I do not have {name!r} in my applications, Sir."
+        return f"removed {name} from apps."
+    return f"don't have {name!r} in apps bro."
 
 
 def add_folder(config, name, path):
     config.data.setdefault("folders", {})[name.strip().lower()] = path.strip()
     config.save()
-    return f"Understood, Sir. I will remember {name} as a folder."
+    return f"locked in bro, {name} is now a folder."
 
 
 def remove_folder(config, name):
@@ -31,8 +31,8 @@ def remove_folder(config, name):
     if key in config.data.get("folders", {}):
         del config.data["folders"][key]
         config.save()
-        return f"Done, Sir. {name} has been removed from my folders."
-    return f"I do not have {name!r} in my folders, Sir."
+        return f"removed {name} from folders."
+    return f"don't have {name!r} in folders bro."
 
 
 def add_website(config, name, url):
@@ -40,7 +40,7 @@ def add_website(config, name, url):
         url = f"https://{url.strip()}"
     config.data.setdefault("websites", {})[name.strip().lower()] = url
     config.save()
-    return f"Understood, Sir. I will remember {name} as a website."
+    return f"locked in bro, {name} is now a website."
 
 
 def remove_website(config, name):
@@ -48,5 +48,5 @@ def remove_website(config, name):
     if key in config.data.get("websites", {}):
         del config.data["websites"][key]
         config.save()
-        return f"Done, Sir. {name} has been removed from my websites."
-    return f"I do not have {name!r} in my websites, Sir."
+        return f"removed {name} from websites."
+    return f"don't have {name!r} in websites bro."

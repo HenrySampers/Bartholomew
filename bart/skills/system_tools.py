@@ -12,13 +12,13 @@ import keyboard
 
 
 def current_time():
-    return datetime.now().strftime("It is %A, %d %B %Y at %H:%M, Sir.")
+    return datetime.now().strftime("it's %A, %d %B %Y at %H:%M.")
 
 
 def system_info():
     return (
-        f"System: {platform.system()} {platform.release()} on {platform.machine()}. "
-        f"Python: {platform.python_version()}."
+        f"running {platform.system()} {platform.release()} on {platform.machine()}, "
+        f"python {platform.python_version()}."
     )
 
 
@@ -26,15 +26,15 @@ def system_stats():
     try:
         import psutil
     except ImportError:
-        return "System stats require psutil, Sir. Run: pip install psutil"
+        return "need psutil for that bro — run: pip install psutil"
 
     cpu = psutil.cpu_percent(interval=0.5)
     ram = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
     return (
         f"CPU: {cpu:.1f}% | "
-        f"RAM: {ram.percent:.1f}% used ({ram.used // 1024**2} MB / {ram.total // 1024**2} MB) | "
-        f"Disk: {disk.percent:.1f}% used ({disk.used // 1024**3} GB / {disk.total // 1024**3} GB), Sir."
+        f"RAM: {ram.percent:.1f}% ({ram.used // 1024**2} MB / {ram.total // 1024**2} MB) | "
+        f"Disk: {disk.percent:.1f}% ({disk.used // 1024**3} GB / {disk.total // 1024**3} GB)"
     )
 
 
@@ -42,61 +42,61 @@ def screenshot():
     try:
         from PIL import ImageGrab
     except ImportError:
-        return "Screenshot support needs Pillow installed, Sir. Run: pip install pillow"
+        return "need pillow for screenshots bro — run: pip install pillow"
 
     folder = Path("data") / "screenshots"
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"screenshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
     image = ImageGrab.grab()
     image.save(path)
-    return f"Screenshot saved, Sir."
+    return f"screenshot saved, bro."
 
 
 def run_powershell(command):
     if not command.strip():
-        return "I need a PowerShell command, Sir."
+        return "need a command to run bro."
     completed = subprocess.run(
         ["powershell", "-NoProfile", "-Command", command],
         capture_output=True,
         text=True,
         timeout=30,
     )
-    output = completed.stdout.strip() or completed.stderr.strip() or "No output."
-    return f"PowerShell exited with code {completed.returncode}.\n{output[:2000]}"
+    output = completed.stdout.strip() or completed.stderr.strip() or "no output."
+    return f"powershell exited {completed.returncode}.\n{output[:2000]}"
 
 
 # --- Volume ---
 
 def volume_up():
     keyboard.send("volume up")
-    return "Volume raised, Sir."
+    return "turned up bro."
 
 
 def volume_down():
     keyboard.send("volume down")
-    return "Volume lowered, Sir."
+    return "turned down bro."
 
 
 def mute():
     keyboard.send("volume mute")
-    return "Toggled mute, Sir."
+    return "toggled mute."
 
 
 # --- Media Controls ---
 
 def media_play_pause():
     keyboard.send("play/pause media")
-    return "Done, Sir."
+    return "done."
 
 
 def media_next():
     keyboard.send("next track")
-    return "Skipping to the next track, Sir."
+    return "skipped."
 
 
 def media_prev():
     keyboard.send("previous track")
-    return "Going back a track, Sir."
+    return "went back."
 
 
 # --- Clipboard ---
@@ -106,16 +106,16 @@ def get_clipboard():
         import pyperclip
         text = pyperclip.paste()
         if not text:
-            return "The clipboard is empty, Sir."
-        return f"Clipboard: {text[:500]}"
+            return "clipboard's empty bro."
+        return f"clipboard: {text[:500]}"
     except ImportError:
-        return "Clipboard access requires pyperclip, Sir. Run: pip install pyperclip"
+        return "need pyperclip bro — run: pip install pyperclip"
 
 
 def set_clipboard(text):
     try:
         import pyperclip
         pyperclip.copy(text)
-        return f"Copied to clipboard, Sir."
+        return "copied to clipboard."
     except ImportError:
-        return "Clipboard access requires pyperclip, Sir. Run: pip install pyperclip"
+        return "need pyperclip bro — run: pip install pyperclip"
