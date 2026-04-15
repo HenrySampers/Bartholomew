@@ -261,6 +261,48 @@ def _route(user_text: str) -> dict:
         command = user_text.strip().split(" ", 1 if low.startswith("powershell ") else 2)[-1]
         return _tool("run_powershell", command=command)
 
+    # -- Window / session / processes --
+    if low in {"show desktop", "hide desktop", "go to desktop", "show my desktop"}:
+        return _tool("show_desktop")
+
+    if low in {"switch window", "switch windows", "alt tab", "previous window"}:
+        return _tool("switch_window")
+
+    if low in {"minimize window", "minimise window", "minimize this window", "minimise this window"}:
+        return _tool("minimize_window")
+
+    if low in {"maximize window", "maximise window", "maximize this window", "maximise this window"}:
+        return _tool("maximize_window")
+
+    if low in {"snap window left", "snap left", "move window left"}:
+        return _tool("snap_window_left")
+
+    if low in {"snap window right", "snap right", "move window right"}:
+        return _tool("snap_window_right")
+
+    if low in {"close window", "close this window", "close active window"}:
+        return _tool("close_active_window")
+
+    if low in {"lock screen", "lock computer", "lock my computer"}:
+        return _tool("lock_screen")
+
+    if low in {"sleep computer", "put computer to sleep", "put my computer to sleep"}:
+        return _tool("sleep_computer")
+
+    if low in {"list processes", "running processes", "what is running", "whats running"}:
+        return _tool("list_processes")
+
+    if low.startswith(("list processes named ", "show processes named ")):
+        query = user_text.strip().split(" named ", 1)[1].strip()
+        return _tool("list_processes", query=query)
+
+    if low.startswith(("close process ", "kill process ", "stop process ")):
+        for prefix in ("close process ", "kill process ", "stop process "):
+            if low.startswith(prefix):
+                name = user_text.strip()[len(prefix):].strip()
+                break
+        return _tool("close_process", name=name)
+
     # -- Weather --
     if any(p in low for p in ("weather", "temperature", "how hot", "how cold",
                                "is it raining", "is it sunny", "whats it like outside")):
@@ -334,6 +376,56 @@ def _route(user_text: str) -> dict:
                 query = user_text.strip()[len(prefix):].strip()
                 break
         return _tool("file_search", query=query)
+
+    # -- Local files --
+    if low in {"list downloads", "show downloads"}:
+        return _tool("list_directory", path="downloads")
+
+    if low in {"list desktop", "show desktop files"}:
+        return _tool("list_directory", path="desktop")
+
+    if low in {"list documents", "show documents"}:
+        return _tool("list_directory", path="documents")
+
+    if low.startswith(("list folder ", "show folder ", "list directory ", "show directory ")):
+        for prefix in ("list folder ", "show folder ", "list directory ", "show directory "):
+            if low.startswith(prefix):
+                path = user_text.strip()[len(prefix):].strip()
+                break
+        return _tool("list_directory", path=path)
+
+    if low.startswith(("open file ", "open path ")):
+        prefix = "open file " if low.startswith("open file ") else "open path "
+        path = user_text.strip()[len(prefix):].strip()
+        return _tool("open_path", path=path)
+
+    if low.startswith(("show file ", "reveal file ", "show me file ", "reveal path ")):
+        for prefix in ("show file ", "reveal file ", "show me file ", "reveal path "):
+            if low.startswith(prefix):
+                path = user_text.strip()[len(prefix):].strip()
+                break
+        return _tool("reveal_path", path=path)
+
+    if low.startswith(("read file ", "read text file ")):
+        prefix = "read text file " if low.startswith("read text file ") else "read file "
+        path = user_text.strip()[len(prefix):].strip()
+        return _tool("read_text_file", path=path)
+
+    if low.startswith(("make folder ", "create folder ")):
+        prefix = "make folder " if low.startswith("make folder ") else "create folder "
+        path = user_text.strip()[len(prefix):].strip()
+        return _tool("create_folder", path=path)
+
+    if low.startswith(("write file ", "create file ")) and ":" in user_text:
+        prefix = "write file " if low.startswith("write file ") else "create file "
+        body = user_text.strip()[len(prefix):].strip()
+        path, contents = body.split(":", 1)
+        return _tool("write_text_file", path=path.strip(), contents=contents.strip())
+
+    if low.startswith("append file ") and ":" in user_text:
+        body = user_text.strip()[len("append file "):].strip()
+        path, contents = body.split(":", 1)
+        return _tool("append_text_file", path=path.strip(), contents=contents.strip())
 
     # -- Config listing --
     if low in {"list config", "what apps do you know", "what can you open",

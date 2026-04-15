@@ -108,6 +108,109 @@ def run_powershell(command):
     return f"powershell exited {completed.returncode}.\n{output[:2000]}"
 
 
+# --- Window controls ---
+
+def show_desktop():
+    keyboard.send("windows+d")
+    return "showing desktop."
+
+
+def switch_window():
+    keyboard.send("alt+tab")
+    return "switched windows."
+
+
+def minimize_window():
+    keyboard.send("windows+down")
+    return "minimized the active window."
+
+
+def maximize_window():
+    keyboard.send("windows+up")
+    return "maximized the active window."
+
+
+def snap_window_left():
+    keyboard.send("windows+left")
+    return "snapped the active window left."
+
+
+def snap_window_right():
+    keyboard.send("windows+right")
+    return "snapped the active window right."
+
+
+def close_active_window():
+    keyboard.send("alt+f4")
+    return "closed the active window."
+
+
+# --- Session / power controls ---
+
+def lock_screen():
+    subprocess.Popen(["rundll32.exe", "user32.dll,LockWorkStation"])
+    return "locked the computer."
+
+
+def sleep_computer():
+    subprocess.Popen(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"])
+    return "putting the computer to sleep."
+
+
+# --- Processes ---
+
+def list_processes(query: str = "", limit: int = 10):
+    try:
+        import psutil
+    except ImportError:
+        return "need psutil for that bro - run: pip install psutil"
+
+    query = (query or "").strip().lower()
+    limit = max(1, min(int(limit or 10), 30))
+    rows = []
+    for proc in psutil.process_iter(["pid", "name", "memory_info", "cpu_percent"]):
+        try:
+            name = proc.info.get("name") or ""
+            if query and query not in name.lower():
+                continue
+            mem = proc.info.get("memory_info")
+            mem_mb = int(mem.rss / 1024 / 1024) if mem else 0
+            rows.append((mem_mb, proc.info.get("pid"), name))
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    rows.sort(reverse=True)
+    if not rows:
+        return "couldn't find matching processes bro."
+    lines = [f"{name} (pid {pid}, {mem_mb} MB)" for mem_mb, pid, name in rows[:limit]]
+    return "running processes:\n" + "\n".join(lines)
+
+
+def close_process(name: str):
+    try:
+        import psutil
+    except ImportError:
+        return "need psutil for that bro - run: pip install psutil"
+
+    target = (name or "").strip().lower()
+    if not target:
+        return "need a process name bro."
+
+    closed = []
+    for proc in psutil.process_iter(["pid", "name"]):
+        try:
+            proc_name = proc.info.get("name") or ""
+            if target in proc_name.lower():
+                proc.terminate()
+                closed.append(f"{proc_name} pid {proc.info.get('pid')}")
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    if not closed:
+        return f"couldn't find a process matching {name!r} bro."
+    return "asked these processes to close:\n" + "\n".join(closed[:10])
+
+
 # --- Volume ---
 
 def volume_up():

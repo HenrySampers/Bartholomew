@@ -5,7 +5,7 @@ Hold SPACE to speak, release to send.
 Hold SPACE while Bart is speaking to interrupt.
 Press ESC to quit.
 
-Or set WAKE_WORD_ENABLED=true in .env and just say 'Bart' to activate.
+Or set WAKE_WORD_ENABLED=true in .env and use the configured wake model.
 """
 import os
 import time
@@ -48,9 +48,9 @@ def _set_state(new_state: BartState) -> None:
 # Core loop
 # ---------------------------------------------------------------------------
 
-def _handle_input() -> None:
+def _handle_input(hold_space: bool = True) -> None:
     _set_state(BartState.LISTENING)
-    user_speech = ears.listen_and_transcribe()
+    user_speech = ears.listen_and_transcribe(hold_space=hold_space)
 
     if not user_speech or not user_speech.strip():
         _set_state(BartState.IDLE)
@@ -124,7 +124,7 @@ try:
             if WAKE_WORD_ENABLED:
                 if wakeword.is_triggered():
                     wakeword.clear_trigger()
-                    _handle_input()
+                    _handle_input(hold_space=False)
                     wakeword.restart()
             else:
                 if keyboard.is_pressed("space"):

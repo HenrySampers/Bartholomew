@@ -15,7 +15,8 @@ import pyaudio
 RATE = 16000
 CHUNK = 1280  # 80 ms at 16 kHz, openWakeWord's expected frame size.
 WAKE_MODEL = os.getenv("WAKE_MODEL", "hey_mycroft").strip()
-WAKE_THRESHOLD = float(os.getenv("WAKE_THRESHOLD", "0.5"))
+WAKE_THRESHOLD = float(os.getenv("WAKE_THRESHOLD", "0.35"))
+WAKE_DEBUG = os.getenv("WAKE_DEBUG", "false").lower() == "true"
 
 _triggered = threading.Event()
 _stop = threading.Event()
@@ -67,15 +68,17 @@ def _load_model():
         raise RuntimeError("openwakeword is not installed. run: pip install openwakeword") from exc
 
     try:
-        download_models()
+        download_models([WAKE_MODEL])
     except Exception:
         pass
 
     try:
-        _model = Model(wakeword_models=[WAKE_MODEL])
-    except Exception:
-        _model = Model()
-    print(f"[wake word] openWakeWord ready: {WAKE_MODEL}")
+        _model = Model(wakeword_models=[WAKE_MODEL], inference_framework="onnx")
+    except Exception as exc:
+        print(f"[wake word] couldn't load {WAKE_MODEL!r}, loading all built-ins: {exc}")
+        _model = Model(inference_framework="onnx")
+    loaded = ", ".join(getattr(_model, "models", {}).keys()) or WAKE_MODEL
+    print(f"[wake word] openWakeWord ready: {loaded} (threshold {WAKE_THRESHOLD})")
     return _model
 
 
@@ -114,8 +117,16 @@ def _listen_loop() -> None:
                 print(f"[wake word] predict error: {exc}")
                 break
 
-            score = scores.get(WAKE_MODEL, max(scores.values()) if scores else 0.0)
+            score = scores.get(WAKE_MODEL)
+            if score is None:
+                score = next((value for key, value in scores.items() if WAKE_MODEL in key), None)
+            if score is None:
+                score = max(scores.values()) if scores else 0.0
+            if WAKE_DEBUG and int(time.time() * 10) % 10 == 0:
+                best_name = max(scores, key=scores.get) if scores else "none"
+                print(f"[wake word] best={best_name} score={score:.3f}")
             if score >= WAKE_THRESHOLD:
+                print(f"[wake word] triggered at {score:.3f}")
                 try:
                     import winsound
 

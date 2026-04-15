@@ -3,6 +3,8 @@ import pyaudio
 import wave
 import os
 import keyboard
+import struct
+import time
 from pathlib import Path
 from groq import Groq
 from dotenv import load_dotenv
@@ -20,6 +22,18 @@ WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base.en").strip()
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu").strip()
 WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8").strip()
 _whisper_model = None
+
+FORMAT = pyaudio.paInt16
+CHANNELS = 1
+RATE = 16000
+CHUNK = 1024
+MAX_RECORD_SECONDS = 30
+MIN_RECORD_SECONDS = 0.4
+FOLLOWUP_MAX_RECORD_SECONDS = float(os.getenv("WAKE_FOLLOWUP_MAX_SECONDS", "12"))
+FOLLOWUP_START_TIMEOUT = float(os.getenv("WAKE_FOLLOWUP_START_TIMEOUT", "5"))
+FOLLOWUP_SILENCE_SECONDS = float(os.getenv("WAKE_FOLLOWUP_SILENCE_SECONDS", "1.0"))
+FOLLOWUP_ENERGY_THRESHOLD = int(os.getenv("WAKE_FOLLOWUP_ENERGY_THRESHOLD", "250"))
+WAVE_OUTPUT_FILENAME = "bart_temp_audio.wav"
 
 
 def _get_whisper_model():
@@ -60,53 +74,121 @@ def _transcribe_with_groq(audio_path):
         )
     return transcription
 
-def listen_and_transcribe():
-    """
-    Records audio while SPACEBAR is held, then returns the transcription.
-    Waits for SPACE to actually be held down before capturing audio.
-    """
-    FORMAT = pyaudio.paInt16
-    CHANNELS = 1
-    RATE = 16000
-    CHUNK = 1024
-    MAX_RECORD_SECONDS = 30
-    MIN_RECORD_SECONDS = 0.4
-    WAVE_OUTPUT_FILENAME = "bart_temp_audio.wav"
 
-    # Wait until SPACE is actually held (guards against spurious triggers)
-    import time
+def _rms(data: bytes) -> float:
+    count = len(data) // 2
+    if count == 0:
+        return 0.0
+    shorts = struct.unpack(f"{count}h", data)
+    return (sum(sample * sample for sample in shorts) / count) ** 0.5
+
+
+def _write_wav(audio, frames, output_filename):
+    with wave.open(output_filename, "wb") as wf:
+        wf.setnchannels(CHANNELS)
+        wf.setsampwidth(audio.get_sample_size(FORMAT))
+        wf.setframerate(RATE)
+        wf.writeframes(b"".join(frames))
+
+
+def _record_hold_space(output_filename):
+    # Wait until SPACE is actually held (guards against spurious triggers).
     deadline = time.time() + 2.0
     while not keyboard.is_pressed("space") and time.time() < deadline:
         time.sleep(0.02)
 
     audio = pyaudio.PyAudio()
-
     print("Bart is listening...")
-    stream = audio.open(format=FORMAT, channels=CHANNELS,
-                        rate=RATE, input=True,
-                        frames_per_buffer=CHUNK)
+    stream = audio.open(
+        format=FORMAT,
+        channels=CHANNELS,
+        rate=RATE,
+        input=True,
+        frames_per_buffer=CHUNK,
+    )
 
     frames = []
     max_chunks = int(RATE / CHUNK * MAX_RECORD_SECONDS)
     min_chunks = int(RATE / CHUNK * MIN_RECORD_SECONDS)
 
-    for index in range(max_chunks):
-        data = stream.read(CHUNK)
-        frames.append(data)
-        if index >= min_chunks and not keyboard.is_pressed("space"):
-            break
+    try:
+        for index in range(max_chunks):
+            data = stream.read(CHUNK, exception_on_overflow=False)
+            frames.append(data)
+            if index >= min_chunks and not keyboard.is_pressed("space"):
+                break
+    finally:
+        print("Processing...")
+        stream.stop_stream()
+        stream.close()
+        _write_wav(audio, frames, output_filename)
+        audio.terminate()
 
-    print("Processing...")
-    stream.stop_stream()
-    stream.close()
-    audio.terminate()
 
-    # Save temp file
-    with wave.open(WAVE_OUTPUT_FILENAME, 'wb') as wf:
-        wf.setnchannels(CHANNELS)
-        wf.setsampwidth(audio.get_sample_size(FORMAT))
-        wf.setframerate(RATE)
-        wf.writeframes(b''.join(frames))
+def _record_until_silence(output_filename):
+    audio = pyaudio.PyAudio()
+    print("Bart is listening...")
+    stream = audio.open(
+        format=FORMAT,
+        channels=CHANNELS,
+        rate=RATE,
+        input=True,
+        frames_per_buffer=CHUNK,
+    )
+
+    frames = []
+    speech_started = False
+    started_at = time.time()
+    last_voice_at = None
+    min_chunks = int(RATE / CHUNK * MIN_RECORD_SECONDS)
+    max_chunks = int(RATE / CHUNK * FOLLOWUP_MAX_RECORD_SECONDS)
+    silence_chunks = int(RATE / CHUNK * FOLLOWUP_SILENCE_SECONDS)
+    quiet_count = 0
+
+    try:
+        for index in range(max_chunks):
+            data = stream.read(CHUNK, exception_on_overflow=False)
+            energy = _rms(data)
+
+            if energy >= FOLLOWUP_ENERGY_THRESHOLD:
+                speech_started = True
+                last_voice_at = time.time()
+                quiet_count = 0
+            elif speech_started:
+                quiet_count += 1
+
+            if speech_started:
+                frames.append(data)
+            elif time.time() - started_at > FOLLOWUP_START_TIMEOUT:
+                break
+
+            if speech_started and index >= min_chunks and quiet_count >= silence_chunks:
+                break
+
+        if not frames and last_voice_at is None:
+            return False
+        return True
+    finally:
+        print("Processing...")
+        stream.stop_stream()
+        stream.close()
+        if frames:
+            _write_wav(audio, frames, output_filename)
+        audio.terminate()
+
+
+def listen_and_transcribe(hold_space=True):
+    """
+    Records audio and returns the transcription.
+    hold_space=True records while SPACEBAR is held.
+    hold_space=False records the next spoken utterance until silence.
+    """
+    if hold_space:
+        _record_hold_space(WAVE_OUTPUT_FILENAME)
+    else:
+        recorded = _record_until_silence(WAVE_OUTPUT_FILENAME)
+        if not recorded:
+            return ""
 
     try:
         if STT_PROVIDER == "groq":

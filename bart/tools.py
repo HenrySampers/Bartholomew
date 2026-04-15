@@ -8,7 +8,8 @@ from .tool_types import Tool
 from .config_loader import BartConfig
 from .memory import MemoryStore
 from .skills import (system_tools, app_tools, memory_tools, note_tools,
-                     config_tools, weather_tools, timer_tools, search_tools, spotify_tools)
+                     config_tools, weather_tools, timer_tools, search_tools,
+                     spotify_tools, file_tools)
 
 
 class ToolRegistry:
@@ -126,6 +127,41 @@ class ToolRegistry:
             confirmation_reason="PowerShell commands can alter files, apps, settings, or security state.",
         )
 
+        # --- Windows / session / processes ---
+        self._reg("show_desktop", "Show or hide the Windows desktop.", system_tools.show_desktop)
+        self._reg("switch_window", "Switch to the previous active window.", system_tools.switch_window)
+        self._reg("minimize_window", "Minimize the active window.", system_tools.minimize_window)
+        self._reg("maximize_window", "Maximize the active window.", system_tools.maximize_window)
+        self._reg("snap_window_left", "Snap the active window to the left side of the screen.", system_tools.snap_window_left)
+        self._reg("snap_window_right", "Snap the active window to the right side of the screen.", system_tools.snap_window_right)
+        self._reg(
+            "close_active_window", "Close the active window.",
+            system_tools.close_active_window,
+            requires_confirmation=True,
+            confirmation_reason="Closing the active window can discard unsaved work.",
+        )
+        self._reg(
+            "lock_screen", "Lock the Windows session.", system_tools.lock_screen,
+            requires_confirmation=True,
+            confirmation_reason="This locks your computer session.",
+        )
+        self._reg(
+            "sleep_computer", "Put the computer to sleep.", system_tools.sleep_computer,
+            requires_confirmation=True,
+            confirmation_reason="This suspends your computer.",
+        )
+        self._reg("list_processes", "List running processes. Args: query (optional), limit (optional)", system_tools.list_processes, self._params({
+            "query": text_prop("Optional process name filter."),
+            "limit": {"type": "integer", "description": "Maximum number of processes to return."},
+        }))
+        self._reg(
+            "close_process", "Terminate processes matching a name. Args: name",
+            system_tools.close_process,
+            self._params({"name": text_prop("Process name or partial name to terminate.")}, ["name"]),
+            requires_confirmation=True,
+            confirmation_reason="Closing processes can lose unsaved work or stop important apps.",
+        )
+
         # --- Volume & media ---
         self._reg("volume_up", "Increase system volume.", system_tools.volume_up)
         self._reg("volume_down", "Decrease system volume.", system_tools.volume_down)
@@ -157,6 +193,49 @@ class ToolRegistry:
         self._reg("file_search", "Search for files by name. Args: query", search_tools.file_search, self._params({
             "query": text_prop("Filename or partial filename to search for."),
         }, ["query"]))
+
+        # --- Local files ---
+        self._reg("list_directory", "List files and folders in a directory. Args: path, limit (optional)", file_tools.list_directory, self._params({
+            "path": text_prop("Folder path or alias like desktop, downloads, documents, bart."),
+            "limit": {"type": "integer", "description": "Maximum number of entries to show."},
+        }))
+        self._reg("open_path", "Open a local file or folder by path. Args: path", file_tools.open_path, self._params({
+            "path": text_prop("Local file or folder path, or alias like desktop/downloads/documents."),
+        }, ["path"]))
+        self._reg("reveal_path", "Reveal a local file or folder in Explorer. Args: path", file_tools.reveal_path, self._params({
+            "path": text_prop("Local file or folder path."),
+        }, ["path"]))
+        self._reg("read_text_file", "Read a local text file. Args: path, max_chars (optional)", file_tools.read_text_file, self._params({
+            "path": text_prop("Local text file path."),
+            "max_chars": {"type": "integer", "description": "Maximum characters to return."},
+        }, ["path"]))
+        self._reg(
+            "create_folder", "Create a folder. Args: path",
+            file_tools.create_folder,
+            self._params({"path": text_prop("Folder path to create.")}, ["path"]),
+            requires_confirmation=True,
+            confirmation_reason="This creates folders on your computer.",
+        )
+        self._reg(
+            "write_text_file", "Create or overwrite a text file. Args: path, contents",
+            file_tools.write_text_file,
+            self._params({
+                "path": text_prop("Text file path to create or overwrite."),
+                "contents": text_prop("Text to write."),
+            }, ["path", "contents"]),
+            requires_confirmation=True,
+            confirmation_reason="This writes to a file and may overwrite existing contents.",
+        )
+        self._reg(
+            "append_text_file", "Append text to a file. Args: path, contents",
+            file_tools.append_text_file,
+            self._params({
+                "path": text_prop("Text file path to append to."),
+                "contents": text_prop("Text to append."),
+            }, ["path", "contents"]),
+            requires_confirmation=True,
+            confirmation_reason="This changes a file on your computer.",
+        )
 
         # --- Spotify ---
         self._reg("spotify_current", "Show what's playing on Spotify.", spotify_tools.spotify_current)

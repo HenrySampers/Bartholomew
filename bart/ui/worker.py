@@ -85,9 +85,11 @@ class BartWorker(QThread):
                 # --- Wake word OR space bar ---
                 if self._state == BartState.IDLE:
                     triggered = False
+                    hold_space = True
                     if WAKE_WORD_ENABLED and wakeword.is_triggered():
                         wakeword.clear_trigger()
                         triggered = True
+                        hold_space = False
                     elif keyboard.is_pressed("space"):
                         if WAKE_WORD_ENABLED:
                             wakeword.stop()
@@ -99,7 +101,7 @@ class BartWorker(QThread):
                             pass  # already handling
                         else:
                             try:
-                                self._handle_input()
+                                self._handle_input(hold_space=hold_space)
                             except Exception as exc:
                                 import traceback
                                 traceback.print_exc()
@@ -128,10 +130,10 @@ class BartWorker(QThread):
     # Core input flow
     # ------------------------------------------------------------------
 
-    def _handle_input(self):
+    def _handle_input(self, hold_space: bool = True):
         self._set_state(BartState.LISTENING)
 
-        user_speech = ears.listen_and_transcribe()
+        user_speech = ears.listen_and_transcribe(hold_space=hold_space)
 
         if not user_speech or not user_speech.strip():
             self._set_state(BartState.IDLE)
