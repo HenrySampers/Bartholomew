@@ -13,6 +13,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 TTS_PROVIDER = os.getenv("TTS_PROVIDER", "piper").strip().lower()
+
+# Set by BartWorker to stop playback mid-sentence without killing the process
+_ui_interrupt = None
 PIPER_EXE = os.getenv("PIPER_EXE", "piper").strip()
 PIPER_MODEL = os.getenv("PIPER_MODEL", "").strip()
 PIPER_LENGTH_SCALE = os.getenv("PIPER_LENGTH_SCALE", "1.3").strip()  # >1 = slower
@@ -61,6 +64,11 @@ def _speak_with_piper(text, allow_interrupt=True):
     interrupted = False
     winsound.PlaySound(str(output_path), winsound.SND_FILENAME | winsound.SND_ASYNC)
     while True:
+        # UI interrupt event — set by BartWorker when user hits the stop button
+        if _ui_interrupt is not None and _ui_interrupt.is_set():
+            interrupted = True
+            winsound.PlaySound(None, winsound.SND_PURGE)
+            break
         if allow_interrupt and keyboard.is_pressed("space"):
             interrupted = True
             winsound.PlaySound(None, winsound.SND_PURGE)

@@ -110,6 +110,19 @@ class MemoryStore:
             ).fetchall()
         return [{"role": role, "content": content} for role, content in rows]
 
+    def remove_last_turns(self, n: int = 2):
+        """Delete the n most-recent rows from conversation_history (for interrupt undo)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT id FROM conversation_history ORDER BY id DESC LIMIT {n}"
+            ).fetchall()
+            ids = [r[0] for r in rows]
+            if ids:
+                placeholders = ",".join("?" * len(ids))
+                conn.execute(
+                    f"DELETE FROM conversation_history WHERE id IN ({placeholders})", ids
+                )
+
     # ------------------------------------------------------------------
     # Command log
     # ------------------------------------------------------------------
