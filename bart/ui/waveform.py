@@ -113,7 +113,7 @@ class WaveformWidget(QWidget):
         bar_count = 12
         bar_w = max(4, w // (bar_count * 2))
         gap = (w - bar_count * bar_w) // (bar_count + 1)
-        p.setPen(Qt_no_pen())
+        p.setPen(Qt.PenStyle.NoPen)
 
         for i in range(bar_count):
             # Each bar has its own noise phase
@@ -131,7 +131,7 @@ class WaveformWidget(QWidget):
     def _draw_dots(self, p, color, t, cx, cy):
         dot_r = 7
         spacing = 28
-        p.setPen(Qt_no_pen())
+        p.setPen(Qt.PenStyle.NoPen)
         for i in range(3):
             phase = t * 4 - i * 0.45
             bounce = -cy * 0.25 * abs(math.sin(phase))
@@ -161,7 +161,7 @@ class WaveformWidget(QWidget):
 
     # -- CONFIRMING: pulsing concentric rings --
     def _draw_rings(self, p, color, t, cx, cy):
-        p.setPen(Qt_no_pen())
+        p.setPen(Qt.PenStyle.NoPen)
         ring_count = 3
         for i in range(ring_count):
             phase = t * 2.5 - i * 0.7
@@ -179,9 +179,3 @@ class WaveformWidget(QWidget):
 
 def cy_from_h(h):
     return h / 2
-
-
-def Qt_no_pen():
-    pen = QPen()
-    pen.setStyle(0)  # Qt.PenStyle.NoPen
-    return pen
