@@ -329,4 +329,4 @@ def _handle_error(exc: Exception) -> str:
     if "network" in msg or "connect" in msg or "unreachable" in msg:
         return "I appear to have lost my network connection, Sir."
     print(f"Bart's brain error: {exc}")
-    return "My apologies, Sir. I seem to be having a moment of cognitive dissonance."
+    return "Yo my bad dude, something went sideways on my end. Try again?"
