@@ -140,7 +140,9 @@ class BartWorker(QThread):
             self._speak("didn't catch that bro, try again.", log=False)
             return
 
+        print("[debug] emitting transcript signal...")
         self.transcript_ready.emit(user_speech)
+        print("[debug] checking shutdown phrases...")
 
         # Shutdown phrases — require at least 3 chars to avoid hallucination triggers
         from ..text_utils import normalize_command
@@ -151,6 +153,7 @@ class BartWorker(QThread):
             "turn yourself off", "close", "close bart", "stop running",
         }
         normalized = normalize_command(user_speech)
+        print(f"[debug] normalized='{normalized}', is_shutdown={normalized in _SHUTDOWN_PHRASES}")
         if len(normalized) >= 3 and normalized in _SHUTDOWN_PHRASES:
             self._running = False
             self._set_state(BartState.SPEAKING)
@@ -159,7 +162,9 @@ class BartWorker(QThread):
             return
 
         # Thinking / confirming
+        print("[debug] setting state THINKING...")
         self._set_state(BartState.CONFIRMING if brain.is_confirming() else BartState.THINKING)
+        print("[debug] state set")
 
         # Check for interrupt before we even call brain
         if self._interrupt_event.is_set():
