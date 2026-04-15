@@ -113,24 +113,28 @@ def wake_up_context() -> str:
 def mine_conversation(turns: list[dict]) -> None:
     """
     Mine a list of {role, content} conversation turns into the palace.
-    Call this at end-of-session to build up Bart's long-term context.
+    Writes to data/conversations/ — never the system temp dir — so only
+    this session's file is indexed, not unrelated files.
     """
     if not turns:
         return
     try:
-        import tempfile
         from mempalace.convo_miner import mine_convos
         _ensure()
+        export_dir = PALACE_PATH.parent / "conversations"
+        export_dir.mkdir(parents=True, exist_ok=True)
+
         lines = []
         for t in turns:
             if t["role"] == "user":
                 lines.append(f"> {t['content']}")
             else:
                 lines.append(t["content"])
-        content = "\n".join(lines)
-        tmp = Path(tempfile.mktemp(suffix=".txt"))
-        tmp.write_text(content, encoding="utf-8")
-        mine_convos(str(tmp.parent), str(PALACE_PATH))
-        tmp.unlink(missing_ok=True)
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        export_file = export_dir / f"session_{ts}.txt"
+        export_file.write_text("\n".join(lines), encoding="utf-8")
+
+        mine_convos(str(export_dir), str(PALACE_PATH))
     except Exception:
         pass

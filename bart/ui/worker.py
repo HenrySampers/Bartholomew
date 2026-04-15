@@ -152,8 +152,11 @@ class BartWorker(QThread):
         if len(normalized) >= 3 and normalized in _SHUTDOWN_PHRASES:
             self._running = False
             self._set_state(BartState.SPEAKING)
-            brain.mine_session_to_palace()
             voice.speak_blocking("later dude.")
+            # Mine in background — don't block the shutdown
+            threading.Thread(
+                target=brain.mine_session_to_palace, daemon=True
+            ).start()
             self.shutdown_complete.emit()
             return
 
