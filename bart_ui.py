@@ -30,7 +30,21 @@ if not ICON_PATH.exists():
 from bart.ui.window import BartWindow
 
 
+def _preload():
+    """
+    Load heavyweight models in the main thread before Qt starts.
+    ctranslate2 (faster-whisper backend) segfaults when its thread pool
+    initialises inside a QThread — preloading avoids that entirely.
+    """
+    print("Loading Whisper model... (first run may take a moment)")
+    from bart.ears import _get_whisper_model
+    _get_whisper_model()
+    print("Whisper model ready.")
+
+
 def main():
+    _preload()
+
     # High-DPI support
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
