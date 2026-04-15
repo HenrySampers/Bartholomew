@@ -63,8 +63,8 @@ def _transcribe_with_groq(audio_path):
 def listen_and_transcribe():
     """
     Records audio while SPACEBAR is held, then returns the transcription.
+    Waits for SPACE to actually be held down before capturing audio.
     """
-    # Recording settings
     FORMAT = pyaudio.paInt16
     CHANNELS = 1
     RATE = 16000
@@ -73,9 +73,15 @@ def listen_and_transcribe():
     MIN_RECORD_SECONDS = 0.4
     WAVE_OUTPUT_FILENAME = "bart_temp_audio.wav"
 
+    # Wait until SPACE is actually held (guards against spurious triggers)
+    import time
+    deadline = time.time() + 2.0
+    while not keyboard.is_pressed("space") and time.time() < deadline:
+        time.sleep(0.02)
+
     audio = pyaudio.PyAudio()
 
-    print("Bart is listening... (Hold SPACE and speak, release SPACE to send)")
+    print("Bart is listening...")
     stream = audio.open(format=FORMAT, channels=CHANNELS,
                         rate=RATE, input=True,
                         frames_per_buffer=CHUNK)
@@ -90,7 +96,7 @@ def listen_and_transcribe():
         if index >= min_chunks and not keyboard.is_pressed("space"):
             break
 
-    print("Processing, Sir...")
+    print("Processing...")
     stream.stop_stream()
     stream.close()
     audio.terminate()

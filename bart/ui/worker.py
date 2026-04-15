@@ -69,12 +69,15 @@ class BartWorker(QThread):
         if WAKE_WORD_ENABLED:
             wakeword.start()
 
+        # Short pause so the window is visible before we start polling keys
+        time.sleep(0.5)
         self._set_state(BartState.IDLE)
 
-        try:
-            while self._running:
+        from ..skills import timer_tools
+
+        while self._running:
+            try:
                 # --- Timer alerts ---
-                from ..skills import timer_tools
                 alert = timer_tools.get_alert()
                 if alert and self._state == BartState.IDLE:
                     self._speak(alert, log=True)
@@ -85,15 +88,8 @@ class BartWorker(QThread):
                     if WAKE_WORD_ENABLED and wakeword.is_triggered():
                         wakeword.clear_trigger()
                         triggered = True
-                        # wakeword already closed mic, so ears.py can open it
-                    elif not WAKE_WORD_ENABLED and keyboard.is_pressed("space"):
-                        triggered = True
-                    elif WAKE_WORD_ENABLED and keyboard.is_pressed("space"):
-                        # Space works even in wake-word mode
-                        if wakeword.is_triggered():
-                            wakeword.clear_trigger()
-                        else:
-                            # Temporarily pause wake word listener so mic is free
+                    elif keyboard.is_pressed("space"):
+                        if WAKE_WORD_ENABLED:
                             wakeword.stop()
                         triggered = True
 
@@ -104,6 +100,14 @@ class BartWorker(QThread):
                         else:
                             try:
                                 self._handle_input()
+                            except Exception as exc:
+                                import traceback
+                                traceback.print_exc()
+                                self._set_state(BartState.IDLE)
+                                try:
+                                    self.reply_ready.emit("yo something went sideways, try again bro.")
+                                except Exception:
+                                    pass
                             finally:
                                 self._handle_lock.release()
                                 if WAKE_WORD_ENABLED:
@@ -111,12 +115,14 @@ class BartWorker(QThread):
 
                 time.sleep(0.05)
 
-        except Exception as exc:
-            print(f"[worker] fatal error: {exc}")
-        finally:
-            if WAKE_WORD_ENABLED:
-                wakeword.stop()
-            self.shutdown_complete.emit()
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                time.sleep(0.1)
+
+        if WAKE_WORD_ENABLED:
+            wakeword.stop()
+        self.shutdown_complete.emit()
 
     # ------------------------------------------------------------------
     # Core input flow
