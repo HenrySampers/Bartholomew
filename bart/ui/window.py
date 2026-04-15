@@ -63,6 +63,7 @@ class BartWindow(QMainWindow):
         super().__init__()
         self._drag_pos = QPoint()
         self._current_state = BartState.IDLE
+        self._weather_text = ""
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
