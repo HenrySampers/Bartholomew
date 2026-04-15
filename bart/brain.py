@@ -302,8 +302,8 @@ def _route_open(low: str, user_text: str) -> dict:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _tool(name: str, **args) -> dict:
-    return {"type": "tool", "tool": name, "args": args}
+def _tool(tool_name: str, **args) -> dict:
+    return {"type": "tool", "tool": tool_name, "args": args}
 
 
 def _handle_error(exc: Exception) -> str:
