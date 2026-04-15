@@ -98,11 +98,7 @@ def ask_bart(user_text: str) -> str:
             return result
 
         # ---- LLM chat ----
-        reply = _chat(user_text)
-        memory.log_command(user_text, decision, reply)
-        _log_turn("user", user_text)
-        _log_turn("assistant", reply)
-        return reply
+        return _chat_with_tools(user_text)
 
     except Exception as exc:
         return _handle_error(exc)
@@ -148,6 +144,7 @@ def _build_system() -> str:
 
     parts = [
         SYSTEM_PROMPT,
+        "When a tool can directly do what the user asked, call the tool instead of describing how to do it.",
         f"\nCurrent time: {datetime.now().strftime('%H:%M')} ({time_vibe}).",
     ]
 
@@ -170,6 +167,48 @@ def _build_system() -> str:
 
 def _chat(user_text: str) -> str:
     return brain_provider.generate(_build_system(), list(_history), user_text)
+
+
+def _chat_with_tools(user_text: str) -> str:
+    global _pending_action
+    tool_decision = brain_provider.generate_with_tools(
+        _build_system(),
+        list(_history),
+        user_text,
+        tools.schemas_for_llm(),
+    )
+
+    if tool_decision.get("type") == "tool":
+        tool_name = tool_decision.get("tool", "")
+        args = tool_decision.get("args") or {}
+        if not isinstance(args, dict):
+            args = {}
+        tool = tools.tools.get(tool_name)
+        if not tool:
+            reply = "yo that tool doesn't exist bro, my bad."
+            memory.log_command(user_text, tool_decision, reply)
+            _log_turn("user", user_text)
+            _log_turn("assistant", reply)
+            return reply
+        if tool.requires_confirmation:
+            _pending_action = {"tool": tool_name, "args": args}
+            prompt = confirmation_prompt(tool_name, args, tool.confirmation_reason)
+            _log_turn("user", user_text)
+            _log_turn("assistant", prompt)
+            return prompt
+        result = tools.execute(tool_name, args)
+        memory.log_command(user_text, tool_decision, result)
+        _log_turn("user", user_text)
+        _log_turn("assistant", result)
+        return result
+
+    reply = tool_decision.get("content", "").strip()
+    if not reply:
+        reply = _chat(user_text)
+    memory.log_command(user_text, {"type": "respond"}, reply)
+    _log_turn("user", user_text)
+    _log_turn("assistant", reply)
+    return reply
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +243,18 @@ def _route(user_text: str) -> dict:
 
     if low in {"screenshot", "take a screenshot", "capture the screen", "take screenshot"}:
         return _tool("screenshot")
+
+    if low in {
+        "what am i looking at",
+        "whats on my screen",
+        "what is on my screen",
+        "describe my screen",
+        "describe the screen",
+        "what do you see",
+        "look at my screen",
+        "look at the screen",
+    }:
+        return _tool("look_at_screen", query=user_text.strip())
 
     if low.startswith(("run powershell ", "powershell ")):
         command = user_text.strip().split(" ", 1 if low.startswith("powershell ") else 2)[-1]

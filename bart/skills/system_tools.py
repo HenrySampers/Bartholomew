@@ -5,6 +5,8 @@ PowerShell, volume, media controls, clipboard.
 import os
 import platform
 import subprocess
+import base64
+import io
 from datetime import datetime
 from pathlib import Path
 
@@ -50,6 +52,47 @@ def screenshot():
     image = ImageGrab.grab()
     image.save(path)
     return f"screenshot saved, bro."
+
+
+def look_at_screen(query="what's on my screen?"):
+    try:
+        from PIL import ImageGrab
+    except ImportError:
+        return "need pillow for screen vision bro - run: pip install pillow"
+
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        return "gemini api key isn't set bro, so i can't see the screen yet."
+
+    try:
+        import warnings
+
+        warnings.simplefilter("ignore", FutureWarning)
+        import google.generativeai as genai
+
+        image = ImageGrab.grab()
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        png_bytes = buffer.getvalue()
+        image_b64 = base64.b64encode(png_bytes).decode("ascii")
+
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(os.getenv("GEMINI_VISION_MODEL", "gemini-2.5-flash"))
+        prompt = query or "what's on my screen?"
+        try:
+            response = model.generate_content([
+                prompt,
+                {"inline_data": {"mime_type": "image/png", "data": image_b64}},
+            ])
+        except Exception:
+            response = model.generate_content([
+                prompt,
+                {"mime_type": "image/png", "data": png_bytes},
+            ])
+        text = getattr(response, "text", "").strip()
+        return text or "i looked, but gemini didn't give me a description."
+    except Exception as exc:
+        return f"couldn't read the screen rn bro: {exc}"
 
 
 def run_powershell(command):

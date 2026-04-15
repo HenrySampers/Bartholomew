@@ -24,12 +24,21 @@ class OllamaProvider:
         self.host = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 
     def generate(self, system_prompt, history, user_prompt):
+        body = self._chat(system_prompt, history, user_prompt)
+        content = body.get("message", {}).get("content", "").strip()
+        if not content:
+            raise ProviderError("Ollama returned an empty response.")
+        return content
+
+    def _chat(self, system_prompt, history, user_prompt, tools=None):
         messages = [{"role": "system", "content": system_prompt}]
         for turn in history:
             messages.append({"role": turn["role"], "content": turn["content"]})
         messages.append({"role": "user", "content": user_prompt})
 
         payload = {"model": self.model, "messages": messages, "stream": False}
+        if tools:
+            payload["tools"] = tools
         data = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             f"{self.host}/api/chat",
@@ -45,10 +54,31 @@ class OllamaProvider:
         except TimeoutError as exc:
             raise ProviderError("Ollama timed out while generating a response.") from exc
 
-        content = body.get("message", {}).get("content", "").strip()
+        return body
+
+    def generate_with_tools(self, system_prompt, history, user_prompt, tools):
+        body = self._chat(system_prompt, history, user_prompt, tools=tools)
+        message = body.get("message", {})
+        tool_calls = message.get("tool_calls") or []
+        if tool_calls:
+            call = tool_calls[0]
+            fn = call.get("function", {})
+            args = fn.get("arguments", {})
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError:
+                    args = {}
+            return {
+                "type": "tool",
+                "tool": fn.get("name", ""),
+                "args": args or {},
+            }
+
+        content = message.get("content", "").strip()
         if not content:
             raise ProviderError("Ollama returned an empty response.")
-        return content
+        return {"type": "respond", "content": content}
 
 
 class GeminiProvider:
@@ -84,6 +114,46 @@ class GeminiProvider:
             raise ProviderError("Gemini returned an empty response.")
         return text
 
+    def generate_with_tools(self, system_prompt, history, user_prompt, tools):
+        declarations = [
+            {
+                "name": tool["function"]["name"],
+                "description": tool["function"]["description"],
+                "parameters": tool["function"]["parameters"],
+            }
+            for tool in tools
+        ]
+        model = genai.GenerativeModel(
+            model_name=self.model_name,
+            system_instruction=system_prompt,
+            tools=[{"function_declarations": declarations}],
+        )
+        gemini_history = [
+            {"role": "model" if t["role"] == "assistant" else "user", "parts": [t["content"]]}
+            for t in history
+        ]
+        chat = model.start_chat(history=gemini_history)
+        response = chat.send_message(user_prompt)
+
+        try:
+            parts = response.candidates[0].content.parts
+            for part in parts:
+                function_call = getattr(part, "function_call", None)
+                if function_call and getattr(function_call, "name", None):
+                    args = dict(getattr(function_call, "args", {}) or {})
+                    return {
+                        "type": "tool",
+                        "tool": function_call.name,
+                        "args": args,
+                    }
+        except Exception:
+            pass
+
+        text = getattr(response, "text", "").strip()
+        if not text:
+            raise ProviderError("Gemini returned an empty response.")
+        return {"type": "respond", "content": text}
+
 
 class BrainProviderChain:
     def __init__(self):
@@ -100,6 +170,15 @@ class BrainProviderChain:
         for name, provider in self.providers:
             try:
                 return provider.generate(system_prompt, history, user_prompt)
+            except Exception as exc:
+                errors.append(f"{name}: {exc}")
+        raise ProviderError(" | ".join(errors) if errors else "No providers configured.")
+
+    def generate_with_tools(self, system_prompt, history, user_prompt, tools):
+        errors = []
+        for name, provider in self.providers:
+            try:
+                return provider.generate_with_tools(system_prompt, history, user_prompt, tools)
             except Exception as exc:
                 errors.append(f"{name}: {exc}")
         raise ProviderError(" | ".join(errors) if errors else "No providers configured.")

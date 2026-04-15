@@ -23,6 +23,7 @@ from bart.text_utils import normalize_command
 
 OVERLAY_ENABLED = os.getenv("OVERLAY_ENABLED", "true").lower() == "true"
 WAKE_WORD_ENABLED = os.getenv("WAKE_WORD_ENABLED", "false").lower() == "true"
+WAKE_WORD_LABEL = os.getenv("WAKE_MODEL", "hey_mycroft").replace("_", " ")
 
 # ---------------------------------------------------------------------------
 # State machine
@@ -94,7 +95,7 @@ print()
 print("=" * 52)
 print("  Bartholomew (Bart) — online.")
 if WAKE_WORD_ENABLED:
-    print("  Say 'Bart' to activate · ESC to quit")
+    print(f"  Say '{WAKE_WORD_LABEL}' to activate · ESC to quit")
 else:
     print("  Hold SPACE to speak · ESC to quit")
 print("  Try: 'what's the weather', 'set a timer for 5 minutes',")

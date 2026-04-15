@@ -1,35 +1,26 @@
 """
-Wake word listener — say 'Bart' (or 'Hey Bart') to activate hands-free.
+Wake word listener via openWakeWord.
 
-Uses energy gating + the existing faster-whisper model (tiny.en for speed)
-so no extra dependencies are needed. Enable with WAKE_WORD_ENABLED=true in .env.
-
-Flow:
-  1. Background thread owns the mic and listens in 1-second windows.
-  2. If RMS energy exceeds ENERGY_THRESHOLD, buffer and transcribe.
-  3. If 'bart' appears in the transcript, close the mic and set _triggered.
-  4. main.py sees _triggered, calls _handle_input() (which opens the mic via ears.py).
-  5. After _handle_input() returns, call wakeword.restart() to resume listening.
+Public API intentionally matches the older wakeword.py:
+start(), stop(), restart(), is_triggered(), clear_trigger().
 """
 import os
-import struct
-import tempfile
 import threading
 import time
-import wave
 
+import numpy as np
 import pyaudio
 
-CHUNK = 1024
+
 RATE = 16000
-ENERGY_THRESHOLD = int(os.getenv("WAKE_ENERGY_THRESHOLD", "400"))
-WAKE_PHRASE = os.getenv("WAKE_PHRASE", "bart").lower()
-WHISPER_MODEL_SIZE = "tiny.en"
+CHUNK = 1280  # 80 ms at 16 kHz, openWakeWord's expected frame size.
+WAKE_MODEL = os.getenv("WAKE_MODEL", "hey_mycroft").strip()
+WAKE_THRESHOLD = float(os.getenv("WAKE_THRESHOLD", "0.5"))
 
 _triggered = threading.Event()
 _stop = threading.Event()
 _thread: threading.Thread | None = None
-_model = None  # lazy-loaded tiny.en model
+_model = None
 
 
 def is_triggered() -> bool:
@@ -43,6 +34,8 @@ def clear_trigger() -> None:
 def start() -> None:
     """Start the wake word listener thread."""
     global _thread
+    if _thread is not None and _thread.is_alive():
+        return
     _stop.clear()
     _triggered.clear()
     _thread = threading.Thread(target=_listen_loop, daemon=True)
@@ -50,66 +43,49 @@ def start() -> None:
 
 
 def restart() -> None:
-    """Stop and restart — called after main handles a triggered wake."""
+    """Stop and restart after Bart handles a wake event."""
     stop()
-    time.sleep(0.3)
+    time.sleep(0.2)
     start()
 
 
 def stop() -> None:
     _stop.set()
+    if _thread is not None and _thread.is_alive():
+        _thread.join(timeout=1.0)
 
-
-# ---------------------------------------------------------------------------
-# Internal
-# ---------------------------------------------------------------------------
 
 def _load_model():
     global _model
-    if _model is None:
-        from faster_whisper import WhisperModel
-        print("[wake word] loading tiny.en model...")
-        _model = WhisperModel(
-            WHISPER_MODEL_SIZE,
-            device="cpu",
-            compute_type="int8",
-            download_root="models/whisper",
-        )
-        print("[wake word] ready.")
+    if _model is not None:
+        return _model
+
+    try:
+        from openwakeword.model import Model
+        from openwakeword.utils import download_models
+    except ImportError as exc:
+        raise RuntimeError("openwakeword is not installed. run: pip install openwakeword") from exc
+
+    try:
+        download_models()
+    except Exception:
+        pass
+
+    try:
+        _model = Model(wakeword_models=[WAKE_MODEL])
+    except Exception:
+        _model = Model()
+    print(f"[wake word] openWakeWord ready: {WAKE_MODEL}")
     return _model
 
 
-def _rms(data: bytes) -> float:
-    count = len(data) // 2
-    if count == 0:
-        return 0.0
-    shorts = struct.unpack(f"{count}h", data)
-    return (sum(s * s for s in shorts) / count) ** 0.5
-
-
-def _transcribe(frames: list[bytes], pa: pyaudio.PyAudio) -> str:
-    model = _load_model()
-    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-    tmp_path = tmp.name
-    try:
-        with wave.open(tmp_path, "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(pa.get_sample_size(pyaudio.paInt16))
-            wf.setframerate(RATE)
-            wf.writeframes(b"".join(frames))
-        tmp.close()
-        segments, _ = model.transcribe(tmp_path, language="en", beam_size=1, vad_filter=True)
-        return " ".join(s.text for s in segments).lower()
-    except Exception:
-        return ""
-    finally:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
-
-
 def _listen_loop() -> None:
+    try:
+        model = _load_model()
+    except Exception as exc:
+        print(f"[wake word] model error: {exc}")
+        return
+
     pa = pyaudio.PyAudio()
     try:
         stream = pa.open(
@@ -124,10 +100,6 @@ def _listen_loop() -> None:
         pa.terminate()
         return
 
-    buffer: list[bytes] = []
-    silent_chunks = 0
-    speaking = False
-
     try:
         while not _stop.is_set():
             try:
@@ -135,29 +107,23 @@ def _listen_loop() -> None:
             except Exception:
                 break
 
-            energy = _rms(data)
+            frame = np.frombuffer(data, dtype=np.int16)
+            try:
+                scores = model.predict(frame)
+            except Exception as exc:
+                print(f"[wake word] predict error: {exc}")
+                break
 
-            if energy > ENERGY_THRESHOLD:
-                speaking = True
-                silent_chunks = 0
-                buffer.append(data)
-            elif speaking:
-                buffer.append(data)
-                silent_chunks += 1
-                if silent_chunks >= 10:  # ~0.6s of silence = end of utterance
-                    transcript = _transcribe(buffer, pa)
-                    if WAKE_PHRASE in transcript:
-                        import winsound
-                        winsound.Beep(1000, 80)   # quick beep = Bart heard you
-                        stream.close()
-                        pa.terminate()
-                        _triggered.set()
-                        return
-                    buffer = []
-                    speaking = False
-                    silent_chunks = 0
-            else:
-                buffer = []
+            score = scores.get(WAKE_MODEL, max(scores.values()) if scores else 0.0)
+            if score >= WAKE_THRESHOLD:
+                try:
+                    import winsound
+
+                    winsound.Beep(1000, 80)
+                except Exception:
+                    pass
+                _triggered.set()
+                break
     finally:
         try:
             stream.close()

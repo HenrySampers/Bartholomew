@@ -7,5 +7,6 @@ class Tool:
     name: str
     description: str
     handler: Callable
+    parameters: dict | None = None
     requires_confirmation: bool = False
     confirmation_reason: str = "This action changes your computer state."

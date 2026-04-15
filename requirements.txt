@@ -14,3 +14,4 @@ requests
 spotipy
 PyQt6
 mempalace
+openwakeword

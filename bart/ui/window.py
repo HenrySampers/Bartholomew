@@ -50,7 +50,7 @@ _STATE_COLORS = {
 }
 
 _STATE_HINTS = {
-    BartState.IDLE:       "hold SPACE or say Bart",
+    BartState.IDLE:       "hold SPACE or use wake word",
     BartState.LISTENING:  "listening...",
     BartState.THINKING:   "thinking...",
     BartState.SPEAKING:   "speaking",
