@@ -1,4 +1,5 @@
 .env
+.claude/
 data/
 models/
 bart_temp_audio.wav
