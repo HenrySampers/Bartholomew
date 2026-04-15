@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 
 load_dotenv()
-TTS_PROVIDER = os.getenv("TTS_PROVIDER", "pyttsx3").strip().lower()
+TTS_PROVIDER = os.getenv("TTS_PROVIDER", "piper").strip().lower()
 PIPER_EXE = os.getenv("PIPER_EXE", "piper").strip()
 PIPER_MODEL = os.getenv("PIPER_MODEL", "").strip()
 
