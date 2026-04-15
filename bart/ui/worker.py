@@ -133,6 +133,8 @@ class BartWorker(QThread):
 
         user_speech = ears.listen_and_transcribe()
 
+        print(f"[debug] transcribed: {repr(user_speech)}")
+
         if not user_speech or not user_speech.strip():
             self._set_state(BartState.IDLE)
             self._speak("didn't catch that bro, try again.", log=False)
@@ -140,7 +142,7 @@ class BartWorker(QThread):
 
         self.transcript_ready.emit(user_speech)
 
-        # Shutdown phrases
+        # Shutdown phrases — require at least 3 chars to avoid hallucination triggers
         from ..text_utils import normalize_command
         _SHUTDOWN_PHRASES = {
             "quit", "exit", "goodbye", "goodbye bart", "later", "later bart",
@@ -148,7 +150,8 @@ class BartWorker(QThread):
             "shut down", "shutdown", "turn off", "turn off bart",
             "turn yourself off", "close", "close bart", "stop running",
         }
-        if normalize_command(user_speech) in _SHUTDOWN_PHRASES:
+        normalized = normalize_command(user_speech)
+        if len(normalized) >= 3 and normalized in _SHUTDOWN_PHRASES:
             self._running = False
             self._set_state(BartState.SPEAKING)
             voice.speak_blocking("later dude.")
