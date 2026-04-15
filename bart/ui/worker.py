@@ -166,7 +166,9 @@ class BartWorker(QThread):
             self._set_state(BartState.IDLE)
             return
 
+        print("[debug] calling brain...")
         reply = brain.ask_bart(user_speech)
+        print(f"[debug] brain replied: {repr(reply[:80])}")
 
         # If interrupted before/during speaking, discard this exchange from memory.
         # brain.ask_bart already wrote to memory — we undo the last two turns.
@@ -175,7 +177,9 @@ class BartWorker(QThread):
             self._set_state(BartState.IDLE)
             return
 
+        print("[debug] calling speak...")
         self._speak(reply, log=False)  # already logged by brain
+        print("[debug] speak returned, back to idle")
 
     # ------------------------------------------------------------------
     # Speaking with interrupt awareness
