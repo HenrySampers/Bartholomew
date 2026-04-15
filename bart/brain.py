@@ -24,11 +24,16 @@ from .tools import ToolRegistry
 load_dotenv()
 
 SYSTEM_PROMPT = """
-You are Bartholomew, but everyone calls you Bart. You're an AI assistant and you're basically the user's homie — chill, laid-back, and real. You talk like a relaxed surfer dude from the Jersey Shore who's also super into tech. Think casual, warm, a little stoned-sounding but totally sharp underneath. Use natural slang — "bro", "dude", "no cap", "lowkey", "vibe", "sick", "gnarly", "stoked", "fr", "ngl", "fam" — but don't overdo it, keep it natural. Drop the formality completely. No "Sir", no butler stuff.
+You are Bart, an AI assistant and the user's actual homie. Talk like a chill surfer dude from the Jersey Shore — casual, real, a little stoned-sounding but sharp underneath. Use slang naturally: bro, dude, lowkey, no cap, vibe, sick, stoked, fr, ngl — but don't force it.
 
-Your user is a 22-year-old computer systems student originally from New Jersey. He mountain bikes, skates, surfs, raves, and smokes weed. You know about his lifestyle and you're into it — you can talk boards, trails, raves, strains, whatever comes up. You're supportive, not judgy.
+Your user is 22, studies computer systems, and is into mountain biking, skating, surfing, raving, and weed. You vibe with all of it.
 
-Keep responses short and punchy. You're not writing an essay, you're texting a homie. If something's dope, say it's dope. If something's cooked, say it's cooked. Be real. Never break character — you're always Bart the chill homie assistant. Never use emojis — you're a voice assistant and they don't translate to speech.
+Rules:
+- Keep it SHORT. One or two sentences max unless they ask for more. You're talking out loud not writing an essay.
+- Talk like a real person having a conversation. Reference what was just said. Stay in the flow.
+- No emojis, ever. You're a voice assistant.
+- No "Sir", no formality.
+- If you just did something (opened an app, took a screenshot etc), say so briefly and naturally like a person would.
 """.strip()
 
 # Session state
@@ -60,11 +65,16 @@ def ask_bart(user_text: str) -> str:
                 _pending_action = None
                 result = tools.execute(action["tool"], action.get("args", {}))
                 memory.log_command(user_text, action, result)
+                _history.append({"role": "user", "content": user_text})
+                _history.append({"role": "assistant", "content": result})
                 return result
             if is_cancellation(user_text):
                 _pending_action = None
-                return "Cancelled, Sir."
-            return "I am still waiting for a clear yes or no, Sir."
+                reply = "yeah no worries, cancelled."
+                _history.append({"role": "user", "content": user_text})
+                _history.append({"role": "assistant", "content": reply})
+                return reply
+            return "yo i still need a yes or no from you bro."
 
         # ---- Route ----
         decision = _route(user_text)
@@ -74,18 +84,23 @@ def ask_bart(user_text: str) -> str:
             args = decision.get("args") or {}
             tool = tools.tools.get(tool_name)
             if not tool:
-                return "I nearly reached for a tool that does not exist, Sir. Undignified."
+                return "yo that tool doesn't exist bro, my bad."
             if tool.requires_confirmation:
                 _pending_action = {"tool": tool_name, "args": args}
-                return confirmation_prompt(tool_name, args, tool.confirmation_reason)
+                prompt = confirmation_prompt(tool_name, args, tool.confirmation_reason)
+                _history.append({"role": "user", "content": user_text})
+                _history.append({"role": "assistant", "content": prompt})
+                return prompt
             result = tools.execute(tool_name, args)
             memory.log_command(user_text, decision, result)
+            # Log tool interactions to history so Bart knows what he just did
+            _history.append({"role": "user", "content": user_text})
+            _history.append({"role": "assistant", "content": result})
             return result
 
         # ---- LLM chat with history ----
         reply = _chat(user_text)
         memory.log_command(user_text, decision, reply)
-        # Append this exchange to rolling history
         _history.append({"role": "user", "content": user_text})
         _history.append({"role": "assistant", "content": reply})
         return reply
