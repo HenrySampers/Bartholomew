@@ -14,6 +14,10 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 
+from bart.logging_utils import setup_console_logging
+
+setup_console_logging("bart_ui")
+
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
 

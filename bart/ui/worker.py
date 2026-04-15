@@ -140,16 +140,8 @@ class BartWorker(QThread):
 
         self.transcript_ready.emit(user_speech)
 
-        # Shutdown phrases
-        from ..text_utils import normalize_command
-        _SHUTDOWN_PHRASES = {
-            "quit", "exit", "goodbye", "goodbye bart", "later", "later bart",
-            "peace", "peace out", "log off", "sleep", "go to sleep",
-            "shut down", "shutdown", "turn off", "turn off bart",
-            "turn yourself off", "close", "close bart", "stop running",
-        }
-        normalized = normalize_command(user_speech)
-        if len(normalized) >= 3 and normalized in _SHUTDOWN_PHRASES:
+        from ..text_utils import is_shutdown_command
+        if is_shutdown_command(user_speech):
             self._running = False
             self._set_state(BartState.SPEAKING)
             voice.speak_blocking("later dude.")

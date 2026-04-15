@@ -15,11 +15,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from bart.logging_utils import setup_console_logging
+
+setup_console_logging("bart_cli")
+
 from bart import brain, ears, voice
 from bart import overlay, wakeword
 from bart.skills import timer_tools
 from bart.state import BartState, STATE_LABELS
-from bart.text_utils import normalize_command
+from bart.text_utils import is_shutdown_command
 
 OVERLAY_ENABLED = os.getenv("OVERLAY_ENABLED", "true").lower() == "true"
 WAKE_WORD_ENABLED = os.getenv("WAKE_WORD_ENABLED", "false").lower() == "true"
@@ -55,7 +59,7 @@ def _handle_input() -> None:
 
     print(f"\n  You: {user_speech}")
 
-    if normalize_command(user_speech) in _SHUTDOWN_PHRASES:
+    if is_shutdown_command(user_speech):
         _shutdown()
         return
 
@@ -73,13 +77,6 @@ def _shutdown(_event=None) -> None:
     _set_state(BartState.SPEAKING)
     voice.speak_blocking("later dude.")
 
-
-_SHUTDOWN_PHRASES = {
-    "quit", "exit", "goodbye", "goodbye bart", "later", "later bart",
-    "peace", "peace out", "log off", "sleep", "go to sleep",
-    "shut down", "shutdown", "turn off", "turn off bart",
-    "turn yourself off", "close", "close bart", "stop running",
-}
 
 # ---------------------------------------------------------------------------
 # Start-up
