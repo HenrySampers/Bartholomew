@@ -1,0 +1,62 @@
+{
+  "apps": {
+    "chrome": "chrome",
+    "edge": "msedge",
+    "notepad": "notepad",
+    "calculator": "calc",
+    "vscode": "code",
+    "vs code": "code",
+    "spotify": "spotify",
+    "settings": "ms-settings:"
+  },
+  "folders": {
+    "desktop": "C:\\Users\\hsamp\\Desktop",
+    "downloads": "C:\\Users\\hsamp\\Downloads",
+    "documents": "C:\\Users\\hsamp\\Documents",
+    "bartholomew": "C:\\Users\\hsamp\\Bartholomew",
+    "bart": "C:\\Users\\hsamp\\Bartholomew"
+  },
+  "websites": {
+    "google": "https://www.google.com",
+    "youtube": "https://www.youtube.com",
+    "github": "https://github.com",
+    "chatgpt": "https://chatgpt.com",
+    "ollama": "https://ollama.com"
+  },
+  "projects": {
+    "bart": {
+      "path": "C:\\Users\\hsamp\\Bartholomew",
+      "open_command": "code C:\\Users\\hsamp\\Bartholomew",
+      "run_command": "python main.py"
+    },
+    "bartholomew": {
+      "path": "C:\\Users\\hsamp\\Bartholomew",
+      "open_command": "code C:\\Users\\hsamp\\Bartholomew",
+      "run_command": "python main.py"
+    }
+  },
+  "routines": {
+    "coding": [
+      {
+        "tool": "open_project",
+        "args": {
+          "name": "bart"
+        }
+      }
+    ],
+    "research": [
+      {
+        "tool": "open_app",
+        "args": {
+          "name": "chrome"
+        }
+      },
+      {
+        "tool": "open_named_website",
+        "args": {
+          "name": "google"
+        }
+      }
+    ]
+  }
+}

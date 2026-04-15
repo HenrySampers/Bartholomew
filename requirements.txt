@@ -1,0 +1,10 @@
+# requirements.txt
+groq
+google-generativeai
+python-dotenv
+pyaudio
+pyttsx3
+keyboard
+pillow
+piper-tts
+faster-whisper

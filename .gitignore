@@ -1,0 +1,6 @@
+.env
+data/
+models/
+bart_temp_audio.wav
+__pycache__/
+*.pyc
