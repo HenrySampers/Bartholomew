@@ -1,75 +1,115 @@
-from bart import ears, brain, voice
-import keyboard
+"""
+Bartholomew (Bart) — entry point.
+
+Hold SPACE to speak, release to send.
+Hold SPACE while Bart is speaking to interrupt him.
+Press ESC to shut down.
+"""
 import time
+
+import keyboard
+
+from bart import brain, ears, voice
+from bart.state import BartState, STATE_LABELS
 from bart.text_utils import normalize_command
 
-is_running = True
+# ---------------------------------------------------------------------------
+# State machine
+# ---------------------------------------------------------------------------
+
+_state = BartState.IDLE
 
 
-def handle_space_press():
-    try:
-        print("\n[Listening...]")
-        # 1. Listen
-        user_speech = ears.listen_and_transcribe()
-        print(f"You: {user_speech}")
+def _set_state(new_state: BartState):
+    global _state
+    _state = new_state
+    print(f"  [{STATE_LABELS[new_state]}]")
 
-        # Ignore empty input
-        if not user_speech or user_speech.strip() == "":
-            return voice.speak("I didn't catch that, Sir.")
 
-        normalized_speech = normalize_command(user_speech)
-        if normalized_speech in {
-            "quit",
-            "exit",
-            "goodbye",
-            "goodbye bart",
-            "log off",
-            "sleep",
-            "go to sleep",
-            "shut down",
-            "shutdown",
-            "turn off",
-            "turn off bart",
-            "turn yourself off",
-            "close",
-            "close bart",
-            "stop running",
-        }:
-            quit_program()
-            return False
+# ---------------------------------------------------------------------------
+# Core loop handlers
+# ---------------------------------------------------------------------------
 
-        # 2. Think
-        print("[Bart is thinking...]")
-        bart_reply = brain.ask_bart(user_speech)
+def _handle_input():
+    """One full listen → think → speak cycle."""
+    _set_state(BartState.LISTENING)
+    user_speech = ears.listen_and_transcribe()
 
-        # 3. Speak
-        return voice.speak(bart_reply)
+    if not user_speech or not user_speech.strip():
+        _set_state(BartState.IDLE)
+        voice.speak("I didn't catch that, Sir.")
+        return
 
-    except Exception as e:
-        print(f"Critical Error: {e}")
-        return voice.speak("My apologies, Sir. An unexpected error occurred.")
+    print(f"\n  You: {user_speech}")
 
-# --- Quit Handler ---
-def quit_program(event=None):
-    global is_running
-    is_running = False
+    # Check for shutdown commands before going to the brain
+    if normalize_command(user_speech) in _SHUTDOWN_PHRASES:
+        _shutdown()
+        return
+
+    _set_state(BartState.CONFIRMING if brain.is_confirming() else BartState.THINKING)
+    reply = brain.ask_bart(user_speech)
+
+    # After the brain replies, update state to reflect whether we are now
+    # waiting for a confirmation or returning to idle.
+    if brain.is_confirming():
+        _set_state(BartState.CONFIRMING)
+    else:
+        _set_state(BartState.SPEAKING)
+
+    interrupted = voice.speak(reply)
+
+    if not interrupted:
+        _set_state(BartState.IDLE)
+
+
+def _shutdown(_event=None):
+    global _running
+    _running = False
+    _set_state(BartState.SPEAKING)
     voice.speak_blocking("Logging off, Sir. Goodbye.")
 
-print("========================================")
-print("Bartholomew (Bart) Online. Ready to serve, Sir.")
-print("Hold SPACEBAR to speak, release to send. Press SPACE while Bart talks to interrupt.")
-print("Press ESC to quit.")
-print("Try: 'remember my favourite editor is VS Code', 'open notepad', or 'search Python pyttsx3'.")
-print("========================================")
 
-keyboard.on_press_key("esc", quit_program)
+# ---------------------------------------------------------------------------
+# Shutdown phrases
+# ---------------------------------------------------------------------------
+
+_SHUTDOWN_PHRASES = {
+    "quit", "exit", "goodbye", "goodbye bart",
+    "log off", "sleep", "go to sleep",
+    "shut down", "shutdown", "turn off",
+    "turn off bart", "turn yourself off",
+    "close", "close bart", "stop running",
+}
+
+# ---------------------------------------------------------------------------
+# Start-up banner
+# ---------------------------------------------------------------------------
+
+print()
+print("=" * 50)
+print("  Bartholomew (Bart) — online.")
+print("  Hold SPACE to speak · ESC to quit")
+print("  Try: 'volume up', 'open Spotify',")
+print("       'system stats', 'take a screenshot',")
+print("       'add Discord to your apps as discord',")
+print("       'remember my timezone is GMT'")
+print("=" * 50)
+print()
+
+# ---------------------------------------------------------------------------
+# Main loop
+# ---------------------------------------------------------------------------
+
+_running = True
+keyboard.on_press_key("esc", _shutdown)
+
+_set_state(BartState.IDLE)
 
 try:
-    while is_running:
-        if keyboard.is_pressed("space"):
-            interrupted = handle_space_press()
-            if not interrupted:
-                time.sleep(0.25)
+    while _running:
+        if keyboard.is_pressed("space") and _state == BartState.IDLE:
+            _handle_input()
         time.sleep(0.05)
 except KeyboardInterrupt:
-    quit_program()
+    _shutdown()

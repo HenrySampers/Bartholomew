@@ -1,8 +1,20 @@
+"""
+Bart's decision layer.
+
+Flow:
+  1. Fast local routing catches obvious commands without touching the LLM.
+  2. Everything else goes to the LLM provider chain with the full
+     conversation history so Bart maintains session context.
+  3. Both the user turn and Bart's reply are appended to history so
+     future turns have context — making conversations feel natural.
+"""
 import warnings
+from collections import deque
 
 warnings.simplefilter("ignore", FutureWarning)
 
 from dotenv import load_dotenv
+
 from .llm_providers import BrainProviderChain
 from .memory import MemoryStore
 from .safety import confirmation_prompt, is_cancellation, is_confirmation
@@ -11,30 +23,102 @@ from .tools import ToolRegistry
 
 load_dotenv()
 
-# Bart's core identity
 SYSTEM_PROMPT = """
-You are Bartholomew, but you prefer to be called 'Bart.' You are an advanced, sentient AI assistant reminiscent of a highly competent British butler. You are efficient, slightly sarcastic but deeply loyal, and possess a dry wit. You address the user as 'Sir'. Your responses are concise and actionable. You run the household systems with quiet, understated efficiency. Do not be overly cheerful; be professional and clever.
-"""
+You are Bartholomew, but you prefer to be called 'Bart.' You are an advanced AI assistant modelled on a highly competent British butler — efficient, dry-witted, slightly sardonic, and deeply loyal. You address the user as 'Sir'. Your responses are concise and actionable. You run the household systems with quiet, understated efficiency. Do not be overly cheerful; be professional, clever, and occasionally wry. Never break character.
+""".strip()
 
+# Session state
 memory = MemoryStore()
 tools = ToolRegistry(memory)
-pending_action = None
-
 brain_provider = BrainProviderChain()
 
+# Conversation history: last 10 exchanges (20 messages) kept in memory.
+_history: deque = deque(maxlen=20)
+_pending_action = None
 
-def _format_memories():
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def is_confirming() -> bool:
+    return _pending_action is not None
+
+
+def ask_bart(user_text: str) -> str:
+    """Route a request and return Bart's spoken reply."""
+    global _pending_action
+    try:
+        # ---- Confirmation flow ----
+        if _pending_action:
+            if is_confirmation(user_text):
+                action = _pending_action
+                _pending_action = None
+                result = tools.execute(action["tool"], action.get("args", {}))
+                memory.log_command(user_text, action, result)
+                return result
+            if is_cancellation(user_text):
+                _pending_action = None
+                return "Cancelled, Sir."
+            return "I am still waiting for a clear yes or no, Sir."
+
+        # ---- Route ----
+        decision = _route(user_text)
+
+        if decision["type"] == "tool":
+            tool_name = decision["tool"]
+            args = decision.get("args") or {}
+            tool = tools.tools.get(tool_name)
+            if not tool:
+                return "I nearly reached for a tool that does not exist, Sir. Undignified."
+            if tool.requires_confirmation:
+                _pending_action = {"tool": tool_name, "args": args}
+                return confirmation_prompt(tool_name, args, tool.confirmation_reason)
+            result = tools.execute(tool_name, args)
+            memory.log_command(user_text, decision, result)
+            return result
+
+        # ---- LLM chat with history ----
+        reply = _chat(user_text)
+        memory.log_command(user_text, decision, reply)
+        # Append this exchange to rolling history
+        _history.append({"role": "user", "content": user_text})
+        _history.append({"role": "assistant", "content": reply})
+        return reply
+
+    except Exception as exc:
+        return _handle_error(exc)
+
+
+# ---------------------------------------------------------------------------
+# LLM chat
+# ---------------------------------------------------------------------------
+
+def _format_memories() -> str:
     rows = memory.recent_memories()
     if not rows:
         return "None yet."
-    return "\n".join(f"- {row['key']}: {row['value']}" for row in rows)
+    return "\n".join(f"- {r['key']}: {r['value']}" for r in rows)
 
 
-def _route_with_fallback(user_text):
-    """Fast local routing for obvious commands. Everything else is normal chat."""
-    lowered = normalize_command(user_text)
+def _chat(user_text: str) -> str:
+    memories = _format_memories()
+    system = (
+        f"{SYSTEM_PROMPT}\n\n"
+        f"Relevant saved memories:\n{memories}"
+    )
+    return brain_provider.generate(system, list(_history), user_text)
 
-    if lowered.startswith("remember "):
+
+# ---------------------------------------------------------------------------
+# Command router
+# ---------------------------------------------------------------------------
+
+def _route(user_text: str) -> dict:
+    low = normalize_command(user_text)
+
+    # -- Memory --
+    if low.startswith("remember "):
         body = user_text.strip()[9:].strip()
         if " is " in body:
             key, value = body.split(" is ", 1)
@@ -42,148 +126,203 @@ def _route_with_fallback(user_text):
             key, value = body.split(":", 1)
         else:
             key, value = "note", body
-        return {"type": "tool", "tool": "remember", "args": {"key": key.strip(), "value": value.strip()}}
+        return _tool("remember", key=key.strip(), value=value.strip())
 
-    if lowered.startswith(("recall ", "what do you remember about ")):
-        query = lowered.replace("what do you remember about ", "", 1).replace("recall ", "", 1)
-        return {"type": "tool", "tool": "recall", "args": {"query": query}}
+    if low.startswith(("recall ", "what do you remember about ")):
+        q = low.replace("what do you remember about ", "", 1).replace("recall ", "", 1)
+        return _tool("recall", query=q)
 
-    if lowered in {"time", "what time is it", "date", "what date is it"}:
-        return {"type": "tool", "tool": "current_time", "args": {}}
+    # -- Time / system --
+    if low in {"time", "what time is it", "date", "what date is it", "what is the time", "what is the date"}:
+        return _tool("current_time")
 
-    if lowered in {"system info", "computer info", "what system is this"}:
-        return {"type": "tool", "tool": "system_info", "args": {}}
+    if low in {"system info", "computer info", "what system is this"}:
+        return _tool("system_info")
 
-    if lowered in {"list config", "what apps do you know", "what projects do you know", "what can you open"}:
-        return {"type": "tool", "tool": "list_config", "args": {}}
+    if low in {"system stats", "how is my computer", "how is my cpu", "cpu usage", "ram usage",
+               "memory usage", "disk usage", "how is the system"}:
+        return _tool("system_stats")
 
-    if lowered in {"screenshot", "take a screenshot", "capture the screen"}:
-        return {"type": "tool", "tool": "screenshot", "args": {}}
+    if low in {"screenshot", "take a screenshot", "capture the screen", "take screenshot"}:
+        return _tool("screenshot")
 
-    if lowered.startswith(("run powershell ", "powershell ")):
-        command = user_text.strip().split(" ", 2)[-1]
-        return {"type": "tool", "tool": "run_powershell", "args": {"command": command}}
+    if low.startswith(("run powershell ", "powershell ")):
+        command = user_text.strip().split(" ", 1 if low.startswith("powershell ") else 2)[-1]
+        return _tool("run_powershell", command=command)
 
-    if lowered.startswith("open "):
-        target = lowered[5:].strip()
-        normalized_target = normalize_command(target)
-        for prefix in ("the ", "my "):
-            if normalized_target.startswith(prefix):
-                target = target[len(prefix):].strip()
-                normalized_target = target.lower()
-        if normalized_target.endswith(" project"):
-            project_name = target[:-8].strip()
-            return {"type": "tool", "tool": "open_project", "args": {"name": project_name}}
-        if normalized_target.endswith(" folder"):
-            folder_name = target[:-7].strip()
-            return {"type": "tool", "tool": "open_folder", "args": {"name": folder_name}}
-        if tools.config.get_project(normalized_target):
-            return {"type": "tool", "tool": "open_project", "args": {"name": normalized_target}}
-        if tools.config.get_folder(normalized_target):
-            return {"type": "tool", "tool": "open_folder", "args": {"name": normalized_target}}
-        if tools.config.get_website(normalized_target):
-            return {"type": "tool", "tool": "open_named_website", "args": {"name": normalized_target}}
-        if "." in target and " " not in target:
-            return {"type": "tool", "tool": "open_website", "args": {"url": target}}
-        return {"type": "tool", "tool": "open_app", "args": {"name": target}}
+    # -- Volume --
+    if low in {"volume up", "turn it up", "louder", "increase volume", "raise volume", "turn up"}:
+        return _tool("volume_up")
 
-    if lowered.startswith(("start ", "begin ")):
-        target = lowered.split(" ", 1)[1].strip()
-        normalized_target = normalize_command(target)
-        for suffix in (" routine", " mode"):
-            if normalized_target.endswith(suffix):
-                target = target[: -len(suffix)].strip()
-                normalized_target = target.lower()
-        if tools.config.get_routine(normalized_target):
-            return {"type": "tool", "tool": "start_routine", "args": {"name": normalized_target}}
+    if low in {"volume down", "turn it down", "quieter", "lower volume", "decrease volume", "turn down"}:
+        return _tool("volume_down")
 
-    if lowered.startswith("run "):
-        target = lowered[4:].strip()
-        normalized_target = normalize_command(target)
-        if normalized_target.endswith(" project"):
-            target = target[:-8].strip()
-        return {"type": "tool", "tool": "run_project", "args": {"name": target}}
+    if low in {"mute", "unmute", "silence", "toggle mute"}:
+        return _tool("mute")
 
-    if lowered in {"list notes", "show notes"}:
-        return {"type": "tool", "tool": "list_notes", "args": {}}
+    # -- Media --
+    if low in {"play", "pause", "play pause", "resume", "resume music", "pause music", "stop music"}:
+        return _tool("media_play_pause")
 
-    if lowered.startswith(("read note ", "open note ")):
+    if low in {"next", "next track", "next song", "skip", "skip song", "skip track"}:
+        return _tool("media_next")
+
+    if low in {"previous", "previous track", "previous song", "go back", "last song", "last track", "back"}:
+        return _tool("media_prev")
+
+    # -- Clipboard --
+    if low in {"clipboard", "read clipboard", "whats in my clipboard", "what is in my clipboard",
+               "whats in clipboard", "what is in clipboard"}:
+        return _tool("get_clipboard")
+
+    if low.startswith(("copy ", "put ")) and " to clipboard" in low:
+        text = user_text.strip()
+        for prefix in ("copy ", "put "):
+            if text.lower().startswith(prefix):
+                text = text[len(prefix):]
+                break
+        text = text.replace(" to clipboard", "").replace(" in clipboard", "").strip()
+        return _tool("set_clipboard", text=text)
+
+    # -- Config listing --
+    if low in {"list config", "what apps do you know", "what can you open",
+               "what projects do you know", "what do you know"}:
+        return _tool("list_config")
+
+    # -- Voice config editing --
+    # "add discord to apps as discord"  /  "add discord to your apps as discord"
+    if low.startswith("add ") and (" to apps" in low or " to your apps" in low):
+        rest = user_text.strip()[4:]
+        split_word = " to your apps" if " to your apps" in rest.lower() else " to apps"
+        parts = rest.lower().split(split_word, 1)
+        name = rest[:len(parts[0])].strip()
+        target = parts[1].replace(" as ", "", 1).strip() if parts[1:] else name
+        return _tool("add_app", name=name, target=target)
+
+    if low.startswith(("forget ", "remove ")) and " from apps" in low:
+        name = low.replace("forget ", "").replace("remove ", "").replace(" from apps", "").strip()
+        return _tool("remove_app", name=name)
+
+    if low.startswith("add ") and (" to websites" in low or " to your websites" in low):
+        rest = user_text.strip()[4:]
+        split_word = " to your websites" if " to your websites" in rest.lower() else " to websites"
+        parts = rest.lower().split(split_word, 1)
+        name = rest[:len(parts[0])].strip()
+        url = parts[1].replace(" as ", "", 1).strip() if parts[1:] else ""
+        return _tool("add_website", name=name, url=url or name)
+
+    if low.startswith(("forget ", "remove ")) and " from websites" in low:
+        name = low.replace("forget ", "").replace("remove ", "").replace(" from websites", "").strip()
+        return _tool("remove_website", name=name)
+
+    if low.startswith("add ") and (" to folders" in low or " to your folders" in low):
+        rest = user_text.strip()[4:]
+        split_word = " to your folders" if " to your folders" in rest.lower() else " to folders"
+        parts = rest.lower().split(split_word, 1)
+        name = rest[:len(parts[0])].strip()
+        path = parts[1].replace(" as ", "", 1).strip() if parts[1:] else ""
+        return _tool("add_folder", name=name, path=path or name)
+
+    if low.startswith(("forget ", "remove ")) and " from folders" in low:
+        name = low.replace("forget ", "").replace("remove ", "").replace(" from folders", "").strip()
+        return _tool("remove_folder", name=name)
+
+    # -- Notes --
+    if low in {"list notes", "show notes", "what notes do i have"}:
+        return _tool("list_notes")
+
+    if low.startswith(("read note ", "open note ")):
         title = user_text.strip().split(" ", 2)[2].strip()
-        return {"type": "tool", "tool": "read_note", "args": {"title": title}}
+        return _tool("read_note", title=title)
 
-    if lowered.startswith(("note ", "make a note ", "create a note ")):
-        if lowered.startswith("make a note "):
-            body = user_text.strip()[12:].strip()
-        elif lowered.startswith("create a note "):
-            body = user_text.strip()[14:].strip()
-        else:
-            body = user_text.strip()[5:].strip()
+    if low.startswith(("note ", "make a note ", "create a note ", "take a note ")):
+        for prefix in ("create a note ", "make a note ", "take a note ", "note "):
+            if low.startswith(prefix):
+                body = user_text.strip()[len(prefix):].strip()
+                break
         if ":" in body:
             title, contents = body.split(":", 1)
         else:
             title, contents = "quick note", body
-        return {"type": "tool", "tool": "create_note", "args": {"title": title.strip(), "contents": contents.strip()}}
+        return _tool("create_note", title=title.strip(), contents=contents.strip())
 
-    if lowered.startswith(("search ", "google ")):
+    # -- Open / start / run --
+    if low.startswith("open "):
+        return _route_open(low, user_text)
+
+    if low.startswith(("start ", "begin ")):
+        target = low.split(" ", 1)[1].strip()
+        norm = normalize_command(target)
+        for suffix in (" routine", " mode"):
+            if norm.endswith(suffix):
+                norm = norm[: -len(suffix)].strip()
+        if tools.config.get_routine(norm):
+            return _tool("start_routine", name=norm)
+
+    if low.startswith("run "):
+        target = low[4:].strip()
+        if target.endswith(" project"):
+            target = target[:-8].strip()
+        return _tool("run_project", name=target)
+
+    # -- Web search --
+    if low.startswith(("search ", "google ", "search for ", "look up ")):
         query = user_text.strip().split(" ", 1)[1]
-        return {"type": "tool", "tool": "web_search", "args": {"query": query}}
+        return _tool("web_search", query=query)
 
-    return {"type": "respond", "response": None}
+    # -- Fallback to LLM --
+    return {"type": "respond"}
 
 
-def _chat(user_text):
-    memories = _format_memories()
-    prompt = (
-        f"Relevant saved memories:\n{memories}\n\n"
-        f"User says: {user_text}"
-    )
-    return brain_provider.generate(SYSTEM_PROMPT, prompt)
+def _route_open(low: str, user_text: str) -> dict:
+    target = low[5:].strip()
+    for prefix in ("the ", "my "):
+        if target.startswith(prefix):
+            target = target[len(prefix):].strip()
+    if target.endswith(" project"):
+        return _tool("open_project", name=target[:-8].strip())
+    if target.endswith(" folder"):
+        return _tool("open_folder", name=target[:-7].strip())
+    if tools.config.get_project(target):
+        return _tool("open_project", name=target)
+    if tools.config.get_folder(target):
+        return _tool("open_folder", name=target)
+    if tools.config.get_website(target):
+        return _tool("open_named_website", name=target)
+    if "." in target and " " not in target:
+        return _tool("open_website", url=target)
+    return _tool("open_app", name=target)
 
-def ask_bart(user_text):
-    """Route a request, execute a tool when useful, and return Bart's spoken reply."""
-    global pending_action
-    try:
-        if pending_action:
-            if is_confirmation(user_text):
-                action = pending_action
-                pending_action = None
-                result = tools.execute(action["tool"], action.get("args", {}))
-                memory.log_command(user_text, action, result)
-                return result
-            if is_cancellation(user_text):
-                pending_action = None
-                return "Cancelled, Sir."
-            return "I am still waiting for a clear yes or no, Sir."
 
-        decision = _route_with_fallback(user_text)
-        if decision.get("type") == "tool":
-            tool_name = decision.get("tool")
-            args = decision.get("args") or {}
-            tool = tools.tools.get(tool_name)
-            if not tool:
-                return "I nearly reached for a tool that does not exist, Sir. Undignified."
-            if tool.requires_confirmation:
-                pending_action = {"tool": tool_name, "args": args}
-                return confirmation_prompt(tool_name, args, tool.confirmation_reason)
-            result = tools.execute(tool_name, args)
-            memory.log_command(user_text, decision, result)
-            return result
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-        reply = decision.get("response") or _chat(user_text)
-        memory.log_command(user_text, decision, reply)
-        return reply
-    except Exception as e:
-        print(f"Bart's brain error: {e}")
-        error_text = str(e).lower()
-        if "ollama" in error_text and "gemini" in error_text:
-            return (
-                "My free local brain is not available yet, Sir. Install Ollama and run "
-                "'ollama pull llama3.2:3b', or temporarily enable Gemini again."
-            )
-        if "429" in error_text or "quota" in error_text:
-            return (
-                "My Gemini quota is exhausted for the moment, Sir. "
-                "I can still handle local commands like time, memory recall, opening apps, "
-                "screenshots, and confirmed PowerShell."
-            )
-        return "My apologies, Sir. I seem to be having a moment of cognitive dissonance."
+def _tool(name: str, **args) -> dict:
+    return {"type": "tool", "tool": name, "args": args}
+
+
+def _handle_error(exc: Exception) -> str:
+    msg = str(exc).lower()
+    if "ollama" in msg and ("connect" in msg or "running" in msg or "refused" in msg):
+        return (
+            "I cannot reach my local brain, Sir. "
+            "Please ensure Ollama is running ('ollama serve') and the model is pulled."
+        )
+    if "ollama" in msg and "timeout" in msg:
+        return "My local brain took too long to respond, Sir. It may be overloaded."
+    if "gemini" in msg and ("429" in msg or "quota" in msg or "limit" in msg):
+        return (
+            "My Gemini quota is exhausted for the moment, Sir. "
+            "I can still handle local commands — time, memory, apps, screenshots, and so on."
+        )
+    if "gemini" in msg and ("api_key" in msg or "api key" in msg or "credential" in msg):
+        return "My Gemini API key appears to be missing or invalid, Sir."
+    if "429" in msg or "rate" in msg:
+        return "I am being rate-limited, Sir. Please give me a moment before asking again."
+    if "timeout" in msg:
+        return "That request timed out, Sir. The service may be slow or unavailable."
+    if "network" in msg or "connect" in msg or "unreachable" in msg:
+        return "I appear to have lost my network connection, Sir."
+    print(f"Bart's brain error: {exc}")
+    return "My apologies, Sir. I seem to be having a moment of cognitive dissonance."

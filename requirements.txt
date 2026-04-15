@@ -8,3 +8,5 @@ keyboard
 pillow
 piper-tts
 faster-whisper
+psutil
+pyperclip

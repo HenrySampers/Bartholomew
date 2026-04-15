@@ -1,3 +1,11 @@
+"""
+LLM provider chain: Ollama (local, free) → Gemini (cloud fallback).
+Both providers now support multi-turn conversation history so Bart
+can maintain context across a session.
+
+History format (shared):
+    [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}, ...]
+"""
 import json
 import os
 import urllib.error
@@ -15,15 +23,13 @@ class OllamaProvider:
         self.model = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
         self.host = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 
-    def generate(self, system_prompt, user_prompt):
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "stream": False,
-        }
+    def generate(self, system_prompt, history, user_prompt):
+        messages = [{"role": "system", "content": system_prompt}]
+        for turn in history:
+            messages.append({"role": turn["role"], "content": turn["content"]})
+        messages.append({"role": "user", "content": user_prompt})
+
+        payload = {"model": self.model, "messages": messages, "stream": False}
         data = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             f"{self.host}/api/chat",
@@ -39,8 +45,7 @@ class OllamaProvider:
         except TimeoutError as exc:
             raise ProviderError("Ollama timed out while generating a response.") from exc
 
-        message = body.get("message", {})
-        content = message.get("content", "").strip()
+        content = body.get("message", {}).get("content", "").strip()
         if not content:
             raise ProviderError("Ollama returned an empty response.")
         return content
@@ -52,11 +57,28 @@ class GeminiProvider:
         api_key = os.getenv("GEMINI_API_KEY")
         if api_key:
             genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel(model_name=self.model_name)
+        # Pass personality as a system instruction so it is always in scope.
+        self._system_prompt_cache = None
+        self._model_cache = None
 
-    def generate(self, system_prompt, user_prompt):
-        prompt = f"{system_prompt}\n\n{user_prompt}"
-        response = self.model.generate_content(prompt)
+    def _get_model(self, system_prompt):
+        if self._system_prompt_cache != system_prompt or self._model_cache is None:
+            self._model_cache = genai.GenerativeModel(
+                model_name=self.model_name,
+                system_instruction=system_prompt,
+            )
+            self._system_prompt_cache = system_prompt
+        return self._model_cache
+
+    def generate(self, system_prompt, history, user_prompt):
+        model = self._get_model(system_prompt)
+        # Convert shared history format → Gemini format ("assistant" → "model")
+        gemini_history = [
+            {"role": "model" if t["role"] == "assistant" else "user", "parts": [t["content"]]}
+            for t in history
+        ]
+        chat = model.start_chat(history=gemini_history)
+        response = chat.send_message(user_prompt)
         text = getattr(response, "text", "").strip()
         if not text:
             raise ProviderError("Gemini returned an empty response.")
@@ -67,18 +89,17 @@ class BrainProviderChain:
     def __init__(self):
         provider_names = os.getenv("BART_BRAIN_PROVIDERS", "ollama,gemini")
         self.providers = []
-        for name in [item.strip().lower() for item in provider_names.split(",") if item.strip()]:
+        for name in [n.strip().lower() for n in provider_names.split(",") if n.strip()]:
             if name == "ollama":
                 self.providers.append(("ollama", OllamaProvider()))
             elif name == "gemini":
                 self.providers.append(("gemini", GeminiProvider()))
 
-    def generate(self, system_prompt, user_prompt):
+    def generate(self, system_prompt, history, user_prompt):
         errors = []
         for name, provider in self.providers:
             try:
-                return provider.generate(system_prompt, user_prompt)
+                return provider.generate(system_prompt, history, user_prompt)
             except Exception as exc:
                 errors.append(f"{name}: {exc}")
-        joined = " | ".join(errors) if errors else "No providers configured."
-        raise ProviderError(joined)
+        raise ProviderError(" | ".join(errors) if errors else "No providers configured.")

@@ -14,8 +14,13 @@ class BartConfig:
     def _load(self):
         if not self.path.exists():
             return {"apps": {}, "folders": {}, "websites": {}, "projects": {}, "routines": {}}
-        with self.path.open("r", encoding="utf-8") as file:
-            return json.load(file)
+        with self.path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def save(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("w", encoding="utf-8") as f:
+            json.dump(self.data, f, indent=2, ensure_ascii=False)
 
     def _normalize(self, name):
         return re.sub(r"[^a-z0-9 ]", "", name.strip().lower()).strip()
@@ -41,4 +46,10 @@ class BartConfig:
         websites = ", ".join(sorted(self.data.get("websites", {}).keys())) or "none"
         projects = ", ".join(sorted(self.data.get("projects", {}).keys())) or "none"
         routines = ", ".join(sorted(self.data.get("routines", {}).keys())) or "none"
-        return f"Apps: {apps}\nFolders: {folders}\nWebsites: {websites}\nProjects: {projects}\nRoutines: {routines}"
+        return (
+            f"Apps: {apps}\n"
+            f"Folders: {folders}\n"
+            f"Websites: {websites}\n"
+            f"Projects: {projects}\n"
+            f"Routines: {routines}"
+        )
