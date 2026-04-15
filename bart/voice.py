@@ -18,7 +18,13 @@ PIPER_MODEL = os.getenv("PIPER_MODEL", "").strip()
 PIPER_LENGTH_SCALE = os.getenv("PIPER_LENGTH_SCALE", "1.3").strip()  # >1 = slower
 
 
+def _strip_non_speakable(text):
+    """Remove emojis and characters Piper can't encode."""
+    return text.encode("ascii", errors="ignore").decode("ascii").strip()
+
+
 def _speak_with_piper(text, allow_interrupt=True):
+    text = _strip_non_speakable(text)
     if not PIPER_MODEL:
         print("Piper is selected, but PIPER_MODEL is not set. Falling back to pyttsx3.")
         return _speak_with_pyttsx3(text, allow_interrupt=allow_interrupt)
