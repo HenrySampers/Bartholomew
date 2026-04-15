@@ -164,16 +164,25 @@ class BartWorker(QThread):
         # Thinking / confirming
         print("[debug] setting state THINKING...")
         self._set_state(BartState.CONFIRMING if brain.is_confirming() else BartState.THINKING)
-        print("[debug] state set")
+        print("[debug] state set", flush=True)
+        print(f"[debug] interrupt={self._interrupt_event.is_set()}, running={self._running}", flush=True)
 
         # Check for interrupt before we even call brain
         if self._interrupt_event.is_set():
+            print("[debug] returning due to interrupt", flush=True)
             self._set_state(BartState.IDLE)
             return
 
-        print("[debug] calling brain...")
-        reply = brain.ask_bart(user_speech)
-        print(f"[debug] brain replied: {repr(reply[:80])}")
+        print("[debug] calling brain...", flush=True)
+        try:
+            reply = brain.ask_bart(user_speech)
+        except BaseException as e:
+            import traceback
+            print(f"[debug] brain CRASHED: {type(e).__name__}: {e}", flush=True)
+            traceback.print_exc()
+            self._set_state(BartState.IDLE)
+            return
+        print(f"[debug] brain replied: {repr(reply[:80])}", flush=True)
 
         # If interrupted before/during speaking, discard this exchange from memory.
         # brain.ask_bart already wrote to memory — we undo the last two turns.
@@ -182,7 +191,7 @@ class BartWorker(QThread):
             self._set_state(BartState.IDLE)
             return
 
-        print("[debug] calling speak...")
+        print("[debug] calling speak...", flush=True)
         self._speak(reply, log=False)  # already logged by brain
         print("[debug] speak returned, back to idle")
 
