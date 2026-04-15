@@ -31,17 +31,18 @@ def create():
         except Exception as e:
             print(f"[icon] could not generate icon: {e}")
 
+    icon_line = f"$lnk.IconLocation = '{icon}'" if icon.exists() else ""
     ps_script = f"""
 $ws = New-Object -ComObject WScript.Shell
-$lnk = $ws.CreateShortcut('{shortcut_path}')
+$desktop = $ws.SpecialFolders('Desktop')
+$lnk = $ws.CreateShortcut("$desktop\\Bartholomew.lnk")
 $lnk.TargetPath = '{python_exe}'
 $lnk.Arguments = '"{script}"'
 $lnk.WorkingDirectory = '{project_dir}'
 $lnk.Description = 'Bartholomew (Bart) AI Assistant'
+{icon_line}
+$lnk.Save()
 """
-    if icon.exists():
-        ps_script += f"$lnk.IconLocation = '{icon}'\n"
-    ps_script += "$lnk.Save()\n"
 
     result = subprocess.run(
         ["powershell", "-NoProfile", "-Command", ps_script],

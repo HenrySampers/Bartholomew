@@ -10,7 +10,7 @@ State animations:
 """
 import math
 
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QColor, QPainter, QPen, QBrush
 from PyQt6.QtWidgets import QWidget
 
@@ -36,7 +36,7 @@ class WaveformWidget(QWidget):
         self._tick = 0          # frame counter
         self._level = 0.0       # simulated mic level (0-1) for LISTENING bars
         self.setMinimumHeight(120)
-        self.setAttribute(0x02000000)  # WA_OpaquePaintEvent hint
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._advance)
