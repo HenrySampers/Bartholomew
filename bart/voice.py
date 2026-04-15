@@ -15,6 +15,7 @@ load_dotenv()
 TTS_PROVIDER = os.getenv("TTS_PROVIDER", "piper").strip().lower()
 PIPER_EXE = os.getenv("PIPER_EXE", "piper").strip()
 PIPER_MODEL = os.getenv("PIPER_MODEL", "").strip()
+PIPER_LENGTH_SCALE = os.getenv("PIPER_LENGTH_SCALE", "1.3").strip()  # >1 = slower
 
 
 def _speak_with_piper(text, allow_interrupt=True):
@@ -34,6 +35,8 @@ def _speak_with_piper(text, allow_interrupt=True):
         str(model_path),
         "--output_file",
         str(output_path),
+        "--length-scale",
+        PIPER_LENGTH_SCALE,
     ]
 
     try:
