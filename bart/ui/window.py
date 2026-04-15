@@ -185,6 +185,7 @@ class BartWindow(QMainWindow):
         close_btn = QPushButton("×")
         close_btn.setObjectName("close_btn")
         close_btn.setFixedSize(22, 22)
+        close_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         close_btn.clicked.connect(self._quit)
         lay.addWidget(close_btn)
 
@@ -204,12 +205,14 @@ class BartWindow(QMainWindow):
         space_btn.clicked.connect(self._on_space_clicked)
         space_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         space_btn.setFixedHeight(34)
+        space_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         stop_btn = QPushButton("■  STOP")
         stop_btn.setObjectName("stop_btn")
         stop_btn.clicked.connect(self._on_stop_clicked)
         stop_btn.setFixedHeight(34)
         stop_btn.setFixedWidth(90)
+        stop_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         lay.addWidget(space_btn)
         lay.addWidget(stop_btn)
@@ -350,6 +353,16 @@ class BartWindow(QMainWindow):
                 color: #0d0d0d;
             }}
         """)
+
+    # ------------------------------------------------------------------
+    # Key events — absorb SPACE so it never activates a focused button
+    # ------------------------------------------------------------------
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Space:
+            event.accept()  # swallow — the keyboard library handles SPACE globally
+        else:
+            super().keyPressEvent(event)
 
     # ------------------------------------------------------------------
     # Draggable title bar

@@ -133,18 +133,14 @@ class BartWorker(QThread):
 
         user_speech = ears.listen_and_transcribe()
 
-        print(f"[debug] transcribed: {repr(user_speech)}")
-
         if not user_speech or not user_speech.strip():
             self._set_state(BartState.IDLE)
             self._speak("didn't catch that bro, try again.", log=False)
             return
 
-        print("[debug] emitting transcript signal...")
         self.transcript_ready.emit(user_speech)
-        print("[debug] checking shutdown phrases...")
 
-        # Shutdown phrases — require at least 3 chars to avoid hallucination triggers
+        # Shutdown phrases
         from ..text_utils import normalize_command
         _SHUTDOWN_PHRASES = {
             "quit", "exit", "goodbye", "goodbye bart", "later", "later bart",
@@ -153,7 +149,6 @@ class BartWorker(QThread):
             "turn yourself off", "close", "close bart", "stop running",
         }
         normalized = normalize_command(user_speech)
-        print(f"[debug] normalized='{normalized}', is_shutdown={normalized in _SHUTDOWN_PHRASES}")
         if len(normalized) >= 3 and normalized in _SHUTDOWN_PHRASES:
             self._running = False
             self._set_state(BartState.SPEAKING)
@@ -161,39 +156,20 @@ class BartWorker(QThread):
             self.shutdown_complete.emit()
             return
 
-        # Thinking / confirming
-        print("[debug] setting state THINKING...")
         self._set_state(BartState.CONFIRMING if brain.is_confirming() else BartState.THINKING)
-        print("[debug] state set", flush=True)
-        print(f"[debug] interrupt={self._interrupt_event.is_set()}, running={self._running}", flush=True)
 
-        # Check for interrupt before we even call brain
         if self._interrupt_event.is_set():
-            print("[debug] returning due to interrupt", flush=True)
             self._set_state(BartState.IDLE)
             return
 
-        print("[debug] calling brain...", flush=True)
-        try:
-            reply = brain.ask_bart(user_speech)
-        except BaseException as e:
-            import traceback
-            print(f"[debug] brain CRASHED: {type(e).__name__}: {e}", flush=True)
-            traceback.print_exc()
-            self._set_state(BartState.IDLE)
-            return
-        print(f"[debug] brain replied: {repr(reply[:80])}", flush=True)
+        reply = brain.ask_bart(user_speech)
 
-        # If interrupted before/during speaking, discard this exchange from memory.
-        # brain.ask_bart already wrote to memory — we undo the last two turns.
         if self._interrupt_event.is_set():
             self._undo_last_exchange()
             self._set_state(BartState.IDLE)
             return
 
-        print("[debug] calling speak...", flush=True)
         self._speak(reply, log=False)  # already logged by brain
-        print("[debug] speak returned, back to idle")
 
     # ------------------------------------------------------------------
     # Speaking with interrupt awareness
