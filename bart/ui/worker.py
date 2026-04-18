@@ -49,8 +49,9 @@ class BartWorker(QThread):
     # ------------------------------------------------------------------
 
     def interrupt(self):
-        """Stop Bart mid-sentence. Does NOT save the interrupted exchange."""
+        """Stop Bart's current listen/think/speak cycle as quickly as possible."""
         self._interrupt_event.set()
+        self._set_state(BartState.IDLE)
         # Kill winsound immediately
         try:
             winsound.PlaySound(None, winsound.SND_PURGE)
@@ -133,7 +134,14 @@ class BartWorker(QThread):
     def _handle_input(self, hold_space: bool = True):
         self._set_state(BartState.LISTENING)
 
-        user_speech = ears.listen_and_transcribe(hold_space=hold_space)
+        user_speech = ears.listen_and_transcribe(
+            hold_space=hold_space,
+            interrupt_event=self._interrupt_event,
+        )
+
+        if self._interrupt_event.is_set():
+            self._set_state(BartState.IDLE)
+            return
 
         if not user_speech or not user_speech.strip():
             self._set_state(BartState.IDLE)
@@ -160,7 +168,10 @@ class BartWorker(QThread):
             self._set_state(BartState.IDLE)
             return
 
-        reply = brain.ask_bart(user_speech)
+        reply = self._ask_bart_interruptible(user_speech)
+        if reply is None:
+            self._set_state(BartState.IDLE)
+            return
 
         if self._interrupt_event.is_set():
             self._undo_last_exchange()
@@ -190,6 +201,35 @@ class BartWorker(QThread):
 
         self._set_state(BartState.IDLE)
 
+    def _ask_bart_interruptible(self, user_speech: str):
+        state = {"done": False, "reply": None, "error": None}
+
+        def worker():
+            try:
+                state["reply"] = brain.ask_bart(user_speech)
+            except Exception as exc:
+                state["error"] = exc
+            finally:
+                state["done"] = True
+
+        task = threading.Thread(target=worker, daemon=True)
+        task.start()
+
+        while not state["done"]:
+            if self._interrupt_event.is_set():
+                def cleanup():
+                    task.join()
+                    if state["reply"] is not None:
+                        self._undo_last_exchange()
+
+                threading.Thread(target=cleanup, daemon=True).start()
+                return None
+            time.sleep(0.05)
+
+        if state["error"] is not None:
+            raise state["error"]
+        return state["reply"]
+
     # ------------------------------------------------------------------
     # Undo last exchange from memory if interrupted
     # ------------------------------------------------------------------
@@ -197,7 +237,6 @@ class BartWorker(QThread):
     def _undo_last_exchange(self):
         """Remove the last user+assistant turns from history (not logged)."""
         try:
-            from .. import memory as mem_module
             from .. import brain as brain_module
             # Pop the last two entries from the in-memory deque
             history = brain_module._history
@@ -206,7 +245,7 @@ class BartWorker(QThread):
             if history and history[-1]["role"] == "user":
                 history.pop()
             # Remove from SQLite
-            mem_module.memory.remove_last_turns(n=2)
+            brain_module.memory.remove_last_turns(n=2)
         except Exception as exc:
             print(f"[worker] undo error (non-fatal): {exc}")
 

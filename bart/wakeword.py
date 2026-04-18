@@ -1,5 +1,9 @@
 """
-Wake word listener via openWakeWord.
+Wake activation listener.
+
+Supports either:
+- openWakeWord phrase models
+- a simple double-clap detector
 
 Public API intentionally matches the older wakeword.py:
 start(), stop(), restart(), is_triggered(), clear_trigger().
@@ -10,13 +14,22 @@ import time
 
 import numpy as np
 import pyaudio
+from dotenv import load_dotenv
+
+
+load_dotenv()
 
 
 RATE = 16000
 CHUNK = 1280  # 80 ms at 16 kHz, openWakeWord's expected frame size.
+WAKE_METHOD = os.getenv("WAKE_METHOD", "openwakeword").strip().lower()
 WAKE_MODEL = os.getenv("WAKE_MODEL", "hey_mycroft").strip()
 WAKE_THRESHOLD = float(os.getenv("WAKE_THRESHOLD", "0.35"))
 WAKE_DEBUG = os.getenv("WAKE_DEBUG", "false").lower() == "true"
+CLAP_THRESHOLD = int(os.getenv("CLAP_THRESHOLD", "3500"))
+CLAP_MIN_GAP = float(os.getenv("CLAP_MIN_GAP", "0.12"))
+CLAP_MAX_GAP = float(os.getenv("CLAP_MAX_GAP", "0.6"))
+CLAP_COOLDOWN = float(os.getenv("CLAP_COOLDOWN", "1.5"))
 
 _triggered = threading.Event()
 _stop = threading.Event()
@@ -56,6 +69,30 @@ def stop() -> None:
         _thread.join(timeout=1.0)
 
 
+def activation_label() -> str:
+    if WAKE_METHOD == "clap":
+        return "double clap"
+    return WAKE_MODEL.replace("_", " ")
+
+
+def _beep():
+    try:
+        import winsound
+
+        winsound.Beep(1000, 80)
+    except Exception:
+        pass
+
+
+def _trigger(source: str, score: float | None = None) -> None:
+    if score is None:
+        print(f"[wake word] triggered by {source}")
+    else:
+        print(f"[wake word] triggered by {source} at {score:.3f}")
+    _beep()
+    _triggered.set()
+
+
 def _load_model():
     global _model
     if _model is not None:
@@ -82,13 +119,7 @@ def _load_model():
     return _model
 
 
-def _listen_loop() -> None:
-    try:
-        model = _load_model()
-    except Exception as exc:
-        print(f"[wake word] model error: {exc}")
-        return
-
+def _open_stream():
     pa = pyaudio.PyAudio()
     try:
         stream = pa.open(
@@ -101,6 +132,19 @@ def _listen_loop() -> None:
     except Exception as exc:
         print(f"[wake word] mic error: {exc}")
         pa.terminate()
+        return None, None
+    return pa, stream
+
+
+def _listen_loop_openwakeword() -> None:
+    try:
+        model = _load_model()
+    except Exception as exc:
+        print(f"[wake word] model error: {exc}")
+        return
+
+    pa, stream = _open_stream()
+    if pa is None or stream is None:
         return
 
     try:
@@ -126,14 +170,7 @@ def _listen_loop() -> None:
                 best_name = max(scores, key=scores.get) if scores else "none"
                 print(f"[wake word] best={best_name} score={score:.3f}")
             if score >= WAKE_THRESHOLD:
-                print(f"[wake word] triggered at {score:.3f}")
-                try:
-                    import winsound
-
-                    winsound.Beep(1000, 80)
-                except Exception:
-                    pass
-                _triggered.set()
+                _trigger("openwakeword", score)
                 break
     finally:
         try:
@@ -141,3 +178,62 @@ def _listen_loop() -> None:
             pa.terminate()
         except Exception:
             pass
+
+
+def _listen_loop_clap() -> None:
+    pa, stream = _open_stream()
+    if pa is None or stream is None:
+        return
+
+    print(
+        f"[wake word] clap detector ready "
+        f"(threshold {CLAP_THRESHOLD}, gap {CLAP_MIN_GAP:.2f}-{CLAP_MAX_GAP:.2f}s)"
+    )
+    last_clap_at = None
+    cooldown_until = 0.0
+
+    try:
+        while not _stop.is_set():
+            try:
+                data = stream.read(CHUNK, exception_on_overflow=False)
+            except Exception:
+                break
+
+            now = time.time()
+            frame = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+            if frame.size == 0:
+                continue
+
+            energy = float(np.sqrt(np.mean(frame * frame)))
+            peak = float(np.max(np.abs(frame)))
+            if WAKE_DEBUG and int(now * 10) % 10 == 0:
+                print(f"[wake word] clap energy={energy:.0f} peak={peak:.0f}")
+
+            if now < cooldown_until or peak < CLAP_THRESHOLD:
+                continue
+
+            if last_clap_at is None:
+                last_clap_at = now
+                continue
+
+            gap = now - last_clap_at
+            if CLAP_MIN_GAP <= gap <= CLAP_MAX_GAP:
+                cooldown_until = now + CLAP_COOLDOWN
+                last_clap_at = None
+                _trigger("double clap")
+                break
+
+            last_clap_at = now
+    finally:
+        try:
+            stream.close()
+            pa.terminate()
+        except Exception:
+            pass
+
+
+def _listen_loop() -> None:
+    if WAKE_METHOD == "clap":
+        _listen_loop_clap()
+    else:
+        _listen_loop_openwakeword()

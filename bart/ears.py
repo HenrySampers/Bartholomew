@@ -91,10 +91,12 @@ def _write_wav(audio, frames, output_filename):
         wf.writeframes(b"".join(frames))
 
 
-def _record_hold_space(output_filename):
+def _record_hold_space(output_filename, interrupt_event=None):
     # Wait until SPACE is actually held (guards against spurious triggers).
     deadline = time.time() + 2.0
     while not keyboard.is_pressed("space") and time.time() < deadline:
+        if interrupt_event is not None and interrupt_event.is_set():
+            return False
         time.sleep(0.02)
 
     audio = pyaudio.PyAudio()
@@ -113,6 +115,8 @@ def _record_hold_space(output_filename):
 
     try:
         for index in range(max_chunks):
+            if interrupt_event is not None and interrupt_event.is_set():
+                return False
             data = stream.read(CHUNK, exception_on_overflow=False)
             frames.append(data)
             if index >= min_chunks and not keyboard.is_pressed("space"):
@@ -121,11 +125,13 @@ def _record_hold_space(output_filename):
         print("Processing...")
         stream.stop_stream()
         stream.close()
-        _write_wav(audio, frames, output_filename)
+        if frames:
+            _write_wav(audio, frames, output_filename)
         audio.terminate()
+    return bool(frames)
 
 
-def _record_until_silence(output_filename):
+def _record_until_silence(output_filename, interrupt_event=None):
     audio = pyaudio.PyAudio()
     print("Bart is listening...")
     stream = audio.open(
@@ -147,6 +153,8 @@ def _record_until_silence(output_filename):
 
     try:
         for index in range(max_chunks):
+            if interrupt_event is not None and interrupt_event.is_set():
+                return False
             data = stream.read(CHUNK, exception_on_overflow=False)
             energy = _rms(data)
 
@@ -177,16 +185,18 @@ def _record_until_silence(output_filename):
         audio.terminate()
 
 
-def listen_and_transcribe(hold_space=True):
+def listen_and_transcribe(hold_space=True, interrupt_event=None):
     """
     Records audio and returns the transcription.
     hold_space=True records while SPACEBAR is held.
     hold_space=False records the next spoken utterance until silence.
     """
     if hold_space:
-        _record_hold_space(WAVE_OUTPUT_FILENAME)
+        recorded = _record_hold_space(WAVE_OUTPUT_FILENAME, interrupt_event=interrupt_event)
+        if not recorded:
+            return ""
     else:
-        recorded = _record_until_silence(WAVE_OUTPUT_FILENAME)
+        recorded = _record_until_silence(WAVE_OUTPUT_FILENAME, interrupt_event=interrupt_event)
         if not recorded:
             return ""
 

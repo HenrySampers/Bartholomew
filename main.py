@@ -27,7 +27,7 @@ from bart.text_utils import is_shutdown_command
 
 OVERLAY_ENABLED = os.getenv("OVERLAY_ENABLED", "true").lower() == "true"
 WAKE_WORD_ENABLED = os.getenv("WAKE_WORD_ENABLED", "false").lower() == "true"
-WAKE_WORD_LABEL = os.getenv("WAKE_MODEL", "hey_mycroft").replace("_", " ")
+WAKE_WORD_LABEL = wakeword.activation_label()
 
 # ---------------------------------------------------------------------------
 # State machine
@@ -92,7 +92,10 @@ print()
 print("=" * 52)
 print("  Bartholomew (Bart) — online.")
 if WAKE_WORD_ENABLED:
-    print(f"  Say '{WAKE_WORD_LABEL}' to activate · ESC to quit")
+    if WAKE_WORD_LABEL == "double clap":
+        print("  Double clap to activate · ESC to quit")
+    else:
+        print(f"  Say '{WAKE_WORD_LABEL}' to activate · ESC to quit")
 else:
     print("  Hold SPACE to speak · ESC to quit")
 print("  Try: 'what's the weather', 'set a timer for 5 minutes',")
