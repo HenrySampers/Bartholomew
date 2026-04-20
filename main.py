@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from bart.logging_utils import setup_console_logging
+from bart.logging_utils import log_event, log_process_snapshot, log_timing
 
 setup_console_logging("bart_cli")
 
@@ -35,13 +36,27 @@ WAKE_WORD_LABEL = wakeword.activation_label()
 
 _state = BartState.IDLE
 _state_holder = [BartState.IDLE]   # shared with overlay thread
+_wake_active = False
 
 
 def _set_state(new_state: BartState) -> None:
     global _state
     _state = new_state
     _state_holder[0] = new_state
+    _set_wake_listening(WAKE_WORD_ENABLED and new_state == BartState.IDLE)
     print(f"  [{STATE_LABELS[new_state]}]")
+
+
+def _set_wake_listening(should_listen: bool) -> None:
+    global _wake_active
+    if not WAKE_WORD_ENABLED:
+        return
+    if should_listen and not _wake_active:
+        wakeword.start()
+        _wake_active = True
+    elif not should_listen and _wake_active:
+        wakeword.stop()
+        _wake_active = False
 
 
 # ---------------------------------------------------------------------------
@@ -49,8 +64,12 @@ def _set_state(new_state: BartState) -> None:
 # ---------------------------------------------------------------------------
 
 def _handle_input(hold_space: bool = True) -> None:
+    cycle_started = time.perf_counter()
+    log_process_snapshot("cli_cycle_start", hold_space=hold_space)
     _set_state(BartState.LISTENING)
+    listen_started = time.perf_counter()
     user_speech = ears.listen_and_transcribe(hold_space=hold_space)
+    log_timing("cli_listen_total", (time.perf_counter() - listen_started) * 1000, hold_space=hold_space)
 
     if not user_speech or not user_speech.strip():
         _set_state(BartState.IDLE)
@@ -58,17 +77,24 @@ def _handle_input(hold_space: bool = True) -> None:
         return
 
     print(f"\n  You: {user_speech}")
+    log_event("cli_transcript", text=user_speech[:200])
 
     if is_shutdown_command(user_speech):
         _shutdown()
         return
 
     _set_state(BartState.CONFIRMING if brain.is_confirming() else BartState.THINKING)
+    think_started = time.perf_counter()
     reply = brain.ask_bart(user_speech)
+    log_timing("cli_think_total", (time.perf_counter() - think_started) * 1000)
 
     _set_state(BartState.CONFIRMING if brain.is_confirming() else BartState.SPEAKING)
+    speak_started = time.perf_counter()
     voice.speak(reply)
+    log_timing("cli_speak_total", (time.perf_counter() - speak_started) * 1000)
     _set_state(BartState.IDLE)
+    log_timing("cli_cycle_total", (time.perf_counter() - cycle_started) * 1000)
+    log_process_snapshot("cli_cycle_end")
 
 
 def _shutdown(_event=None) -> None:
@@ -84,9 +110,6 @@ def _shutdown(_event=None) -> None:
 
 if OVERLAY_ENABLED:
     overlay.start(_state_holder)
-
-if WAKE_WORD_ENABLED:
-    wakeword.start()
 
 print()
 print("=" * 52)
@@ -128,7 +151,6 @@ try:
                 if wakeword.is_triggered():
                     wakeword.clear_trigger()
                     _handle_input(hold_space=False)
-                    wakeword.restart()
             else:
                 if keyboard.is_pressed("space"):
                     _handle_input()

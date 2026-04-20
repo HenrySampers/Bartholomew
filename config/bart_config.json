@@ -21,7 +21,8 @@
     "youtube": "https://www.youtube.com",
     "github": "https://github.com",
     "chatgpt": "https://chatgpt.com",
-    "ollama": "https://ollama.com"
+    "ollama": "https://ollama.com",
+    "brightspace": "https://learn.ul.ie/d2l/login?sessionExpired=0&target=%2fd2l%2fhome"
   },
   "projects": {
     "bart": {
@@ -38,9 +39,15 @@
   "routines": {
     "coding": [
       {
-        "tool": "open_project",
+        "tool": "open_app",
         "args": {
-          "name": "bart"
+          "name": "spotify"
+        }
+      },
+      {
+        "tool": "open_app",
+        "args": {
+          "name": "vscode"
         }
       }
     ],

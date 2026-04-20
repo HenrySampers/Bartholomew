@@ -13,6 +13,8 @@ import urllib.request
 
 import google.generativeai as genai
 
+from .logging_utils import log_event
+
 
 class ProviderError(Exception):
     pass
@@ -22,6 +24,7 @@ class OllamaProvider:
     def __init__(self):
         self.model = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
         self.host = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+        self.timeout_seconds = max(5, int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "25")))
 
     def generate(self, system_prompt, history, user_prompt):
         body = self._chat(system_prompt, history, user_prompt)
@@ -47,7 +50,7 @@ class OllamaProvider:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=120) as response:
+            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
                 body = json.loads(response.read().decode("utf-8"))
         except urllib.error.URLError as exc:
             raise ProviderError("Ollama is not running or is not installed.") from exc
@@ -169,8 +172,11 @@ class BrainProviderChain:
         errors = []
         for name, provider in self.providers:
             try:
-                return provider.generate(system_prompt, history, user_prompt)
+                reply = provider.generate(system_prompt, history, user_prompt)
+                log_event("provider_success", provider=name, mode="chat", chars=len(reply))
+                return reply
             except Exception as exc:
+                log_event("provider_error", provider=name, mode="chat", error=str(exc))
                 errors.append(f"{name}: {exc}")
         raise ProviderError(" | ".join(errors) if errors else "No providers configured.")
 
@@ -178,7 +184,10 @@ class BrainProviderChain:
         errors = []
         for name, provider in self.providers:
             try:
-                return provider.generate_with_tools(system_prompt, history, user_prompt, tools)
+                decision = provider.generate_with_tools(system_prompt, history, user_prompt, tools)
+                log_event("provider_success", provider=name, mode="tools", decision=decision.get("type"))
+                return decision
             except Exception as exc:
+                log_event("provider_error", provider=name, mode="tools", error=str(exc))
                 errors.append(f"{name}: {exc}")
         raise ProviderError(" | ".join(errors) if errors else "No providers configured.")

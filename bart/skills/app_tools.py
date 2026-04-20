@@ -8,6 +8,8 @@ import subprocess
 import webbrowser
 from pathlib import Path
 
+import psutil
+
 from ..text_utils import normalize_command
 
 
@@ -59,6 +61,20 @@ def _find_spotify_exe():
     return next((c for c in candidates if c.exists()), None)
 
 
+def _is_process_running(*names):
+    wanted = {name.lower() for name in names if name}
+    if not wanted:
+        return False
+    try:
+        for proc in psutil.process_iter(["name"]):
+            name = (proc.info.get("name") or "").lower()
+            if name in wanted:
+                return True
+    except Exception:
+        return False
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Tool handlers  (config is bound by ToolRegistry via functools.partial)
 # ---------------------------------------------------------------------------
@@ -69,6 +85,8 @@ def open_app(config, name):
         return "need an app name bro."
     normalized = normalize_command(name)
     if normalized == "spotify":
+        if _is_process_running("spotify.exe"):
+            return "Spotify is already open."
         exe = _find_spotify_exe()
         if exe:
             _launch_target(exe)
@@ -77,6 +95,14 @@ def open_app(config, name):
         if shortcut:
             os.startfile(shortcut)
             return "opening Spotify."
+    if normalized in {"vscode", "vs code", "visual studio code"}:
+        subprocess.Popen(
+            ["code", "-n"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            shell=False,
+        )
+        return "opening VS Code."
     shortcut = _find_start_menu_shortcut(normalized)
     if shortcut:
         os.startfile(shortcut)

@@ -4,6 +4,7 @@ Adding a new skill: create a module in bart/skills/, add its tools here.
 """
 import functools
 
+from .logging_utils import log_event
 from .tool_types import Tool
 from .config_loader import BartConfig
 from .memory import MemoryStore
@@ -275,14 +276,21 @@ class ToolRegistry:
 
     def execute(self, name, args):
         if name not in self.tools:
+            log_event("tool_missing", tool=name, args=args)
             return f"yo that tool doesn't exist bro: {name!r}"
         if not isinstance(args, dict):
+            log_event("tool_bad_args", tool=name, args_repr=repr(args))
             return "tool args were malformed bro."
+        log_event("tool_start", tool=name, args=args)
         try:
-            return self.tools[name].handler(**args)
+            result = self.tools[name].handler(**args)
+            log_event("tool_success", tool=name, result_preview=str(result)[:160])
+            return result
         except TypeError as exc:
+            log_event("tool_type_error", tool=name, error=str(exc), args=args)
             return f"tool args were off bro: {exc}"
         except Exception as exc:
+            log_event("tool_error", tool=name, error=str(exc), args=args)
             return f"tool hit a problem bro: {exc}"
 
     # ------------------------------------------------------------------

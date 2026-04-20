@@ -8,6 +8,7 @@ Flow:
   3. Full conversation history (persisted to SQLite) is passed on every
      LLM call so Bart maintains context across restarts.
 """
+import os
 import re
 import warnings
 from collections import deque
@@ -18,12 +19,20 @@ warnings.simplefilter("ignore", FutureWarning)
 from dotenv import load_dotenv
 
 from .llm_providers import BrainProviderChain, ProviderError
+from .logging_utils import log_chat, log_event
 from .memory import MemoryStore
 from .safety import confirmation_prompt, is_cancellation, is_confirmation
 from .text_utils import normalize_command
 from .tools import ToolRegistry
 
 load_dotenv()
+
+BRAIN_MODE = os.getenv("BART_BRAIN_MODE", "fast").strip().lower()
+CHAT_HISTORY_TURNS = max(2, int(os.getenv("BART_CHAT_HISTORY_TURNS", "12")))
+TOOL_HISTORY_TURNS = max(0, int(os.getenv("BART_TOOL_HISTORY_TURNS", "6")))
+PROFILE_MEMORY_LIMIT = max(0, int(os.getenv("BART_PROFILE_MEMORY_LIMIT", "6")))
+USE_PALACE_CONTEXT = os.getenv("BART_USE_PALACE_CONTEXT", "true").lower() == "true"
+USE_PALACE_FOR_TOOLS = os.getenv("BART_USE_PALACE_FOR_TOOLS", "false").lower() == "true"
 
 SYSTEM_PROMPT = """
 You are Bart, an AI assistant and the user's actual homie. Talk like a chill surfer dude from the Jersey Shore — casual, real, relaxed but sharp underneath. Use slang naturally: bro, dude, lowkey, no cap, vibe, sick, stoked, fr, ngl — but don't force it.
@@ -37,6 +46,16 @@ Rules:
 - No "Sir", no formality.
 - Don't bring up weed or stoner references unless the user explicitly brings it up or it's directly relevant.
 - If you just did something (opened an app, took a screenshot etc), say so briefly and naturally like a person would.
+""".strip()
+
+TOOL_PROMPT = """
+You are Bart, a fast local assistant.
+
+Rules:
+- Prefer calling a tool when one can directly satisfy the request.
+- Keep responses very short.
+- If no tool fits, answer in one short sentence.
+- Do not explain tool mechanics unless asked.
 """.strip()
 
 # Session state — history loaded from DB on startup
@@ -59,17 +78,20 @@ def is_confirming() -> bool:
 def ask_bart(user_text: str) -> str:
     global _pending_action
     try:
+        log_event("brain_input", text=user_text[:200], pending_confirmation=bool(_pending_action))
         # ---- Confirmation flow ----
         if _pending_action:
             if is_confirmation(user_text):
                 action = _pending_action
                 _pending_action = None
+                log_event("confirmation_yes", tool=action["tool"], args=action.get("args", {}))
                 result = tools.execute(action["tool"], action.get("args", {}))
                 memory.log_command(user_text, action, result)
                 _log_turn("user", user_text)
                 _log_turn("assistant", result)
                 return result
             if is_cancellation(user_text):
+                log_event("confirmation_no")
                 _pending_action = None
                 reply = "yeah no worries, cancelled."
                 _log_turn("user", user_text)
@@ -79,6 +101,7 @@ def ask_bart(user_text: str) -> str:
 
         # ---- Route ----
         decision = _route(user_text)
+        log_event("route_decision", decision_type=decision.get("type"), tool=decision.get("tool"))
 
         if decision["type"] == "tool":
             tool_name = decision["tool"]
@@ -112,6 +135,7 @@ def ask_bart(user_text: str) -> str:
 def _log_turn(role: str, content: str):
     _history.append({"role": role, "content": content})
     memory.save_history_turn(role, content)
+    log_chat(role, content, source="brain")
 
 
 def mine_session_to_palace():
@@ -132,7 +156,13 @@ def mine_session_to_palace():
 # LLM chat
 # ---------------------------------------------------------------------------
 
-def _build_system() -> str:
+def _recent_history(limit: int) -> list:
+    if limit <= 0:
+        return []
+    return list(_history)[-limit:]
+
+
+def _build_system(*, include_palace: bool = True, include_profile: bool = True, tool_mode: bool = False) -> str:
     hour = datetime.now().hour
     if 5 <= hour < 12:
         time_vibe = "morning — maybe a little groggy but coming alive"
@@ -144,39 +174,59 @@ def _build_system() -> str:
         time_vibe = "late night — chill, maybe a bit loopy"
 
     parts = [
-        SYSTEM_PROMPT,
+        TOOL_PROMPT if tool_mode else SYSTEM_PROMPT,
         "When a tool can directly do what the user asked, call the tool instead of describing how to do it.",
         f"\nCurrent time: {datetime.now().strftime('%H:%M')} ({time_vibe}).",
     ]
 
     # MemPalace wake-up context (semantic memory snapshot, cached 5 min)
-    try:
-        from .palace import wake_up_context
-        palace_ctx = wake_up_context()
-        if palace_ctx:
-            parts.append(f"Memory palace context:\n{palace_ctx}")
-    except Exception:
-        pass
+    if include_palace and USE_PALACE_CONTEXT:
+        try:
+            from .palace import wake_up_context
+            palace_ctx = wake_up_context()
+            if palace_ctx:
+                parts.append(f"Memory palace context:\n{palace_ctx}")
+        except Exception:
+            pass
 
     # SQLite profile fallback (recent key-value memories)
-    profile = memory.get_profile_context()
-    if profile:
-        parts.append(profile)
+    if include_profile and PROFILE_MEMORY_LIMIT > 0:
+        rows = memory.recent_memories(limit=PROFILE_MEMORY_LIMIT)
+        if rows:
+            lines = "\n".join(f"- {r['key']}: {r['value']}" for r in rows)
+            parts.append(f"What you know about the user:\n{lines}")
 
     return "\n\n".join(parts)
 
 
 def _chat(user_text: str) -> str:
-    return brain_provider.generate(_build_system(), list(_history), user_text)
+    include_palace = USE_PALACE_CONTEXT and (BRAIN_MODE != "fastest")
+    reply = brain_provider.generate(
+        _build_system(include_palace=include_palace, include_profile=True, tool_mode=False),
+        _recent_history(CHAT_HISTORY_TURNS),
+        user_text,
+    )
+    log_event("llm_chat_reply", chars=len(reply), history_turns=CHAT_HISTORY_TURNS)
+    return reply
 
 
 def _chat_with_tools(user_text: str) -> str:
     global _pending_action
     tool_decision = brain_provider.generate_with_tools(
-        _build_system(),
-        list(_history),
+        _build_system(
+            include_palace=USE_PALACE_FOR_TOOLS and BRAIN_MODE != "fastest",
+            include_profile=(BRAIN_MODE != "fastest"),
+            tool_mode=True,
+        ),
+        _recent_history(TOOL_HISTORY_TURNS),
         user_text,
         tools.schemas_for_llm(),
+    )
+    log_event(
+        "llm_tool_decision",
+        decision_type=tool_decision.get("type"),
+        tool=tool_decision.get("tool"),
+        history_turns=TOOL_HISTORY_TURNS,
     )
 
     if tool_decision.get("type") == "tool":
@@ -220,6 +270,9 @@ def _route(user_text: str) -> dict:
     low = normalize_command(user_text)
 
     # -- Memory --
+    if any(phrase in low for phrase in ("add to that", "add to it", "update that", "update it")):
+        return _route_memory_update(user_text, low)
+
     if low.startswith("remember "):
         body = user_text.strip()[9:].strip()
         key, value = (body.split(" is ", 1) if " is " in body
@@ -346,6 +399,14 @@ def _route(user_text: str) -> dict:
     if low in {"previous", "previous track", "previous song", "go back", "last song", "last track"}:
         return _tool("spotify_prev")
 
+    if low.startswith(("spotify and play ", "open spotify and play ", "play on spotify ")):
+        for prefix in ("open spotify and play ", "spotify and play ", "play on spotify "):
+            if low.startswith(prefix):
+                query = user_text.strip()[len(prefix):].strip()
+                break
+        if query:
+            return _tool("spotify_search_play", query=query)
+
     if low.startswith(("play ", "put on ", "queue ")):
         for prefix in ("play ", "put on ", "queue "):
             if low.startswith(prefix):
@@ -353,6 +414,14 @@ def _route(user_text: str) -> dict:
                 break
         if query and not any(low.startswith(p + t) for p in ("play ", "put on ")
                              for t in ("spotify", "music")):
+            return _tool("spotify_search_play", query=query)
+
+    if low.startswith(("play some ", "put on some ", "throw on ", "throw on some ")):
+        for prefix in ("play some ", "put on some ", "throw on ", "throw on some "):
+            if low.startswith(prefix):
+                query = user_text.strip()[len(prefix):].strip()
+                break
+        if query:
             return _tool("spotify_search_play", query=query)
 
     # -- Clipboard --
@@ -432,6 +501,11 @@ def _route(user_text: str) -> dict:
                "what projects do you know", "what do you know"}:
         return _tool("list_config")
 
+    if low in {"coding mode", "coding routine", "dev mode", "developer mode"}:
+        for name in ("coding", "dev", "development"):
+            if tools.config.get_routine(name):
+                return _tool("start_routine", name=name)
+
     # -- Voice config editing --
     if low.startswith("add ") and (" to apps" in low or " to your apps" in low):
         rest = user_text.strip()[4:]
@@ -489,6 +563,10 @@ def _route(user_text: str) -> dict:
     if low.startswith("open "):
         return _route_open(low)
 
+    if low.startswith(("launch ", "start up ")):
+        target = low.split(" ", 1)[1].strip()
+        return _route_open(f"open {target}")
+
     if low.startswith(("start ", "begin ")):
         target = low.split(" ", 1)[1].strip()
         norm = normalize_command(target)
@@ -497,6 +575,13 @@ def _route(user_text: str) -> dict:
                 norm = norm[: -len(suffix)].strip()
         if tools.config.get_routine(norm):
             return _tool("start_routine", name=norm)
+
+    if low.startswith(("open ", "launch ", "start ")) and any(
+        phrase in low for phrase in ("coding setup", "dev setup", "developer setup")
+    ):
+        for name in ("coding", "dev", "development", "coding setup"):
+            if tools.config.get_routine(name):
+                return _tool("start_routine", name=name)
 
     if low.startswith("run "):
         target = low[4:].strip()
@@ -515,9 +600,18 @@ def _route(user_text: str) -> dict:
 
 def _route_open(low: str) -> dict:
     target = low[5:].strip()
+    if target.startswith("spotify and play "):
+        return _tool("spotify_search_play", query=target[len("spotify and play "):].strip())
     for prefix in ("the ", "my "):
         if target.startswith(prefix):
             target = target[len(prefix):].strip()
+    normalized_target = normalize_command(target)
+    if normalized_target.endswith(" setup"):
+        routine_name = normalized_target[:-6].strip()
+        if tools.config.get_routine(routine_name):
+            return _tool("start_routine", name=routine_name)
+    if tools.config.get_routine(normalized_target):
+        return _tool("start_routine", name=normalized_target)
     if target.endswith(" project"):
         return _tool("open_project", name=target[:-8].strip())
     if target.endswith(" folder"):
@@ -578,3 +672,106 @@ def _handle_error(exc: Exception) -> str:
         return "lost my connection bro."
     print(f"Bart's brain error: {exc}")
     return "yo my bad dude, something went sideways on my end. try again?"
+
+
+def _route_memory_update(user_text: str, low: str) -> dict:
+    latest = memory.latest_memory()
+    if not latest:
+        return {"type": "respond"}
+
+    extra = user_text.strip()
+    for prefix in ("add to that", "add to it", "update that", "update it"):
+        index = low.find(prefix)
+        if index != -1:
+            extra = user_text.strip()[index + len(prefix):].strip(" :,.")
+            break
+    if extra.lower().startswith("that "):
+        extra = extra[5:].strip()
+    if not extra:
+        return {"type": "respond"}
+
+    merged = _merge_memory_value(latest["value"], extra)
+    return _tool("remember", key=latest["key"], value=merged)
+
+
+def _merge_memory_value(existing: str, extra: str) -> str:
+    existing = existing.strip()
+    extra = extra.strip()
+    if not existing:
+        return extra
+    if not extra:
+        return existing
+    if extra.lower() in existing.lower():
+        return existing
+    replaced = _replace_subject_with_detail(existing, extra)
+    if replaced:
+        return replaced
+
+    trimmed_extra = _trim_repeated_prefix(existing, extra)
+    if not trimmed_extra:
+        return existing
+    if trimmed_extra.lower() in existing.lower():
+        return existing
+    simplified_extra = re.sub(r"^(is|are|was|were)\s+", "", trimmed_extra.strip(), flags=re.I)
+    if simplified_extra and simplified_extra.lower() in existing.lower():
+        return existing
+
+    separator = " "
+    if existing[-1] not in ".!?," and trimmed_extra[0].islower():
+        separator = ", "
+    return f"{existing}{separator}{trimmed_extra}".strip()
+
+
+def _trim_repeated_prefix(existing: str, extra: str) -> str:
+    words = extra.split()
+    existing_norm = _normalize_overlap_text(existing)
+    for size in range(min(4, len(words)), 0, -1):
+        prefix = " ".join(words[:size])
+        if _normalize_overlap_text(prefix) and _normalize_overlap_text(prefix) in existing_norm:
+            candidate = " ".join(words[size:]).strip()
+            if candidate:
+                return candidate
+    return extra
+
+
+def _normalize_overlap_text(text: str) -> str:
+    tokens = re.findall(r"[a-z0-9]+", text.lower())
+    tokens = [token for token in tokens if token not in {"a", "an", "the"}]
+    return " ".join(tokens)
+
+
+def _replace_subject_with_detail(existing: str, extra: str) -> str | None:
+    match = re.match(r"^(?:my|the|a|an)\s+(.+?)\s+is\s+(.+)$", extra.strip(), flags=re.I)
+    if not match:
+        return None
+
+    subject = match.group(1).strip()
+    predicate = match.group(2).strip()
+    if not subject or not predicate:
+        return None
+    if _detail_already_present(existing, subject, predicate):
+        return existing
+
+    subject_match = re.search(rf"(?i)\b(?:a|an|the)?\s*{re.escape(subject)}\b", existing)
+    if not subject_match:
+        return None
+
+    replacement = f"{subject_match.group(0).strip()} is {predicate}"
+    start, end = subject_match.span()
+    candidate = f"{existing[:start]}{replacement}{existing[end:]}".strip()
+    if candidate.lower() == existing.lower():
+        return None
+    return candidate
+
+
+def _detail_already_present(existing: str, subject: str, predicate: str) -> bool:
+    existing_tokens = set(_meaningful_tokens(existing))
+    desired_tokens = set(_meaningful_tokens(f"{subject} {predicate}"))
+    if not desired_tokens:
+        return False
+    return desired_tokens.issubset(existing_tokens)
+
+
+def _meaningful_tokens(text: str) -> list[str]:
+    stopwords = {"a", "an", "the", "is", "are", "was", "were", "my", "and", "to", "of"}
+    return [token for token in re.findall(r"[a-z0-9]+", text.lower()) if token not in stopwords]

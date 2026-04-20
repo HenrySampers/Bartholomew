@@ -50,13 +50,28 @@ class MemoryStore:
     # Memories
     # ------------------------------------------------------------------
 
+    def _normalize_key(self, key: str) -> str:
+        return " ".join(key.strip().lower().split())
+
     def remember(self, key, value):
         created_at = datetime.now().isoformat(timespec="seconds")
+        normalized_key = self._normalize_key(key)
         with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM memories WHERE lower(trim(key)) = ? ORDER BY id DESC LIMIT 1",
+                (normalized_key,),
+            ).fetchone()
+            if row:
+                conn.execute(
+                    "UPDATE memories SET key = ?, value = ?, created_at = ? WHERE id = ?",
+                    (key.strip(), value.strip(), created_at, row[0]),
+                )
+                return "updated"
             conn.execute(
                 "INSERT INTO memories (key, value, created_at) VALUES (?, ?, ?)",
                 (key.strip(), value.strip(), created_at),
             )
+        return "created"
 
     def recall(self, query, limit=5):
         pattern = f"%{query.strip()}%"
@@ -67,15 +82,25 @@ class MemoryStore:
                    ORDER BY id DESC LIMIT ?""",
                 (pattern, pattern, limit),
             ).fetchall()
-        return [{"key": k, "value": v, "created_at": c} for k, v, c in rows]
+        return self._dedupe_memories(rows)
 
     def recent_memories(self, limit=8):
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT key, value, created_at FROM memories ORDER BY id DESC LIMIT ?",
-                (limit,),
+                (max(limit * 3, limit),),
             ).fetchall()
-        return [{"key": k, "value": v, "created_at": c} for k, v, c in rows]
+        return self._dedupe_memories(rows, limit=limit)
+
+    def latest_memory(self):
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT key, value, created_at FROM memories ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        if not row:
+            return None
+        key, value, created_at = row
+        return {"key": key, "value": value, "created_at": created_at}
 
     def get_profile_context(self) -> str:
         """Return saved memories formatted for injection into the system prompt."""
@@ -135,3 +160,16 @@ class MemoryStore:
                 "INSERT INTO command_log (user_text, decision, result, created_at) VALUES (?, ?, ?, ?)",
                 (user_text, decision_text, result, created_at),
             )
+
+    def _dedupe_memories(self, rows, limit=None):
+        seen = set()
+        unique = []
+        for key, value, created_at in rows:
+            normalized_key = self._normalize_key(key)
+            if normalized_key in seen:
+                continue
+            seen.add(normalized_key)
+            unique.append({"key": key, "value": value, "created_at": created_at})
+            if limit is not None and len(unique) >= limit:
+                break
+        return unique

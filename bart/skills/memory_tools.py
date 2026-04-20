@@ -3,13 +3,15 @@
 
 def remember(memory, key, value):
     # SQLite — keeps exact-match history
-    memory.remember(key, value)
+    action = memory.remember(key, value)
     # Palace — semantic vector index for smart recall
     try:
         from .. import palace
         palace.remember(key, value)
     except Exception:
         pass
+    if action == "updated":
+        return f"updated that for you bro: {key}."
     return f"locked in bro: {key}."
 
 

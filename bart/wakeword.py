@@ -16,6 +16,8 @@ import numpy as np
 import pyaudio
 from dotenv import load_dotenv
 
+from .logging_utils import log_event
+
 
 load_dotenv()
 
@@ -30,6 +32,8 @@ CLAP_THRESHOLD = int(os.getenv("CLAP_THRESHOLD", "3500"))
 CLAP_MIN_GAP = float(os.getenv("CLAP_MIN_GAP", "0.12"))
 CLAP_MAX_GAP = float(os.getenv("CLAP_MAX_GAP", "0.6"))
 CLAP_COOLDOWN = float(os.getenv("CLAP_COOLDOWN", "1.5"))
+CLAP_DYNAMIC_RATIO = float(os.getenv("CLAP_DYNAMIC_RATIO", "3.5"))
+CLAP_RESET_AFTER = float(os.getenv("CLAP_RESET_AFTER", "1.0"))
 
 _triggered = threading.Event()
 _stop = threading.Event()
@@ -89,6 +93,7 @@ def _trigger(source: str, score: float | None = None) -> None:
         print(f"[wake word] triggered by {source}")
     else:
         print(f"[wake word] triggered by {source} at {score:.3f}")
+    log_event("wake_trigger", source=source, score=score)
     _beep()
     _triggered.set()
 
@@ -191,6 +196,7 @@ def _listen_loop_clap() -> None:
     )
     last_clap_at = None
     cooldown_until = 0.0
+    noise_floor = float(CLAP_THRESHOLD) / CLAP_DYNAMIC_RATIO
 
     try:
         while not _stop.is_set():
@@ -204,22 +210,36 @@ def _listen_loop_clap() -> None:
             if frame.size == 0:
                 continue
 
-            energy = float(np.sqrt(np.mean(frame * frame)))
             peak = float(np.max(np.abs(frame)))
+            noise_floor = max(200.0, (noise_floor * 0.94) + (peak * 0.06))
+            dynamic_threshold = max(float(CLAP_THRESHOLD), noise_floor * CLAP_DYNAMIC_RATIO)
             if WAKE_DEBUG and int(now * 10) % 10 == 0:
-                print(f"[wake word] clap energy={energy:.0f} peak={peak:.0f}")
+                print(
+                    f"[wake word] clap peak={peak:.0f} "
+                    f"noise={noise_floor:.0f} threshold={dynamic_threshold:.0f}"
+                )
 
-            if now < cooldown_until or peak < CLAP_THRESHOLD:
+            if last_clap_at is not None and (now - last_clap_at) > CLAP_RESET_AFTER:
+                last_clap_at = None
+
+            if now < cooldown_until or peak < dynamic_threshold:
                 continue
 
             if last_clap_at is None:
                 last_clap_at = now
+                log_event(
+                    "clap_detected",
+                    stage="first",
+                    peak=round(peak, 1),
+                    threshold=round(dynamic_threshold, 1),
+                )
                 continue
 
             gap = now - last_clap_at
             if CLAP_MIN_GAP <= gap <= CLAP_MAX_GAP:
                 cooldown_until = now + CLAP_COOLDOWN
                 last_clap_at = None
+                log_event("clap_detected", stage="second", gap=round(gap, 3))
                 _trigger("double clap")
                 break
 

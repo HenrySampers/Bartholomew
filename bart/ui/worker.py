@@ -25,6 +25,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from ..state import BartState
 from .. import brain, ears, voice
+from ..logging_utils import log_event, log_process_snapshot, log_timing
 from .. import wakeword
 
 WAKE_WORD_ENABLED = os.getenv("WAKE_WORD_ENABLED", "false").lower() == "true"
@@ -32,6 +33,7 @@ WAKE_WORD_ENABLED = os.getenv("WAKE_WORD_ENABLED", "false").lower() == "true"
 
 class BartWorker(QThread):
     state_changed = pyqtSignal(object)        # BartState
+    enabled_changed = pyqtSignal(bool)        # whether Bart accepts activation
     transcript_ready = pyqtSignal(str)        # user speech text
     reply_ready = pyqtSignal(str)             # Bart's reply text
     timer_alert = pyqtSignal(str)             # timer fired
@@ -40,9 +42,11 @@ class BartWorker(QThread):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._running = True
+        self._enabled = True
         self._interrupt_event = threading.Event()
         self._state = BartState.IDLE
         self._handle_lock = threading.Lock()  # prevent concurrent _handle_input calls
+        self._wake_active = False
 
     # ------------------------------------------------------------------
     # Public API (called from UI thread)
@@ -51,6 +55,7 @@ class BartWorker(QThread):
     def interrupt(self):
         """Stop Bart's current listen/think/speak cycle as quickly as possible."""
         self._interrupt_event.set()
+        log_event("worker_interrupt", state=str(self._state))
         self._set_state(BartState.IDLE)
         # Kill winsound immediately
         try:
@@ -62,14 +67,28 @@ class BartWorker(QThread):
         self._running = False
         self.interrupt()
 
+    def set_enabled(self, enabled: bool):
+        enabled = bool(enabled)
+        if self._enabled == enabled:
+            return
+        self._enabled = enabled
+        log_event("worker_enabled", enabled=self._enabled)
+        if not enabled:
+            self.interrupt()
+            self._set_wake_listening(False)
+        else:
+            self._interrupt_event.clear()
+            self._set_state(BartState.IDLE)
+        self.enabled_changed.emit(self._enabled)
+
+    def toggle_enabled(self):
+        self.set_enabled(not self._enabled)
+
     # ------------------------------------------------------------------
     # QThread entry point
     # ------------------------------------------------------------------
 
     def run(self):
-        if WAKE_WORD_ENABLED:
-            wakeword.start()
-
         # Short pause so the window is visible before we start polling keys
         time.sleep(0.5)
         self._set_state(BartState.IDLE)
@@ -78,6 +97,10 @@ class BartWorker(QThread):
 
         while self._running:
             try:
+                if not self._enabled:
+                    time.sleep(0.05)
+                    continue
+
                 # --- Timer alerts ---
                 alert = timer_tools.get_alert()
                 if alert and self._state == BartState.IDLE:
@@ -91,10 +114,12 @@ class BartWorker(QThread):
                         wakeword.clear_trigger()
                         triggered = True
                         hold_space = False
+                        log_event("activation", source=wakeword.activation_label())
                     elif keyboard.is_pressed("space"):
                         if WAKE_WORD_ENABLED:
                             wakeword.stop()
                         triggered = True
+                        log_event("activation", source="space")
 
                     if triggered:
                         self._interrupt_event.clear()
@@ -113,8 +138,6 @@ class BartWorker(QThread):
                                     pass
                             finally:
                                 self._handle_lock.release()
-                                if WAKE_WORD_ENABLED:
-                                    wakeword.restart()
 
                 time.sleep(0.05)
 
@@ -123,8 +146,7 @@ class BartWorker(QThread):
                 traceback.print_exc()
                 time.sleep(0.1)
 
-        if WAKE_WORD_ENABLED:
-            wakeword.stop()
+        self._set_wake_listening(False)
         self.shutdown_complete.emit()
 
     # ------------------------------------------------------------------
@@ -132,12 +154,16 @@ class BartWorker(QThread):
     # ------------------------------------------------------------------
 
     def _handle_input(self, hold_space: bool = True):
+        cycle_started = time.perf_counter()
+        log_process_snapshot("cycle_start", hold_space=hold_space, state=str(self._state))
         self._set_state(BartState.LISTENING)
 
+        stt_started = time.perf_counter()
         user_speech = ears.listen_and_transcribe(
             hold_space=hold_space,
             interrupt_event=self._interrupt_event,
         )
+        log_timing("worker_listen_total", (time.perf_counter() - stt_started) * 1000, hold_space=hold_space)
 
         if self._interrupt_event.is_set():
             self._set_state(BartState.IDLE)
@@ -149,6 +175,8 @@ class BartWorker(QThread):
             return
 
         self.transcript_ready.emit(user_speech)
+        log_event("transcript", text=user_speech[:200])
+        log_process_snapshot("post_transcript", chars=len(user_speech))
 
         from ..text_utils import is_shutdown_command
         if is_shutdown_command(user_speech):
@@ -163,12 +191,16 @@ class BartWorker(QThread):
             return
 
         self._set_state(BartState.CONFIRMING if brain.is_confirming() else BartState.THINKING)
+        if not brain.is_confirming():
+            self.reply_ready.emit("on it...")
 
         if self._interrupt_event.is_set():
             self._set_state(BartState.IDLE)
             return
 
+        think_started = time.perf_counter()
         reply = self._ask_bart_interruptible(user_speech)
+        log_timing("worker_think_total", (time.perf_counter() - think_started) * 1000)
         if reply is None:
             self._set_state(BartState.IDLE)
             return
@@ -179,6 +211,8 @@ class BartWorker(QThread):
             return
 
         self._speak(reply, log=False)  # already logged by brain
+        log_timing("worker_cycle_total", (time.perf_counter() - cycle_started) * 1000, interrupted=False)
+        log_process_snapshot("cycle_end")
 
     # ------------------------------------------------------------------
     # Speaking with interrupt awareness
@@ -191,11 +225,14 @@ class BartWorker(QThread):
 
         self._set_state(BartState.SPEAKING if not brain.is_confirming() else BartState.CONFIRMING)
         self.reply_ready.emit(text)
+        log_event("reply", text=text[:200], confirmation=brain.is_confirming())
 
         # Wire our interrupt event into voice.py so it can stop mid-playback
         voice._ui_interrupt = self._interrupt_event
         try:
+            speak_started = time.perf_counter()
             voice.speak(text, allow_interrupt=True)
+            log_timing("worker_speak_total", (time.perf_counter() - speak_started) * 1000)
         finally:
             voice._ui_interrupt = None
 
@@ -221,6 +258,7 @@ class BartWorker(QThread):
                     task.join()
                     if state["reply"] is not None:
                         self._undo_last_exchange()
+                    log_event("thinking_cancelled")
 
                 threading.Thread(target=cleanup, daemon=True).start()
                 return None
@@ -255,4 +293,17 @@ class BartWorker(QThread):
 
     def _set_state(self, state: BartState):
         self._state = state
+        self._set_wake_listening(
+            WAKE_WORD_ENABLED and self._enabled and state == BartState.IDLE
+        )
         self.state_changed.emit(state)
+
+    def _set_wake_listening(self, should_listen: bool):
+        if not WAKE_WORD_ENABLED:
+            return
+        if should_listen and not self._wake_active:
+            wakeword.start()
+            self._wake_active = True
+        elif not should_listen and self._wake_active:
+            wakeword.stop()
+            self._wake_active = False

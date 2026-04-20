@@ -9,6 +9,8 @@ from pathlib import Path
 from groq import Groq
 from dotenv import load_dotenv
 
+from .logging_utils import log_event, log_timing
+
 load_dotenv()
 Path("models/huggingface").mkdir(parents=True, exist_ok=True)
 Path("models/whisper").mkdir(parents=True, exist_ok=True)
@@ -52,6 +54,7 @@ def _get_whisper_model():
 
 
 def _transcribe_with_faster_whisper(audio_path):
+    started = time.perf_counter()
     model = _get_whisper_model()
     segments, info = model.transcribe(
         audio_path,
@@ -60,18 +63,21 @@ def _transcribe_with_faster_whisper(audio_path):
         language="en",
     )
     text = " ".join(segment.text.strip() for segment in segments).strip()
+    log_timing("stt_faster_whisper", (time.perf_counter() - started) * 1000, provider="faster_whisper")
     if not text:
         return ""
     return text
 
 
 def _transcribe_with_groq(audio_path):
+    started = time.perf_counter()
     with open(audio_path, "rb") as file:
         transcription = groq_client.audio.transcriptions.create(
             file=(audio_path, file.read()),
             model="whisper-large-v3-turbo",
             response_format="text"
         )
+    log_timing("stt_groq", (time.perf_counter() - started) * 1000, provider="groq")
     return transcription
 
 
@@ -192,19 +198,27 @@ def listen_and_transcribe(hold_space=True, interrupt_event=None):
     hold_space=False records the next spoken utterance until silence.
     """
     if hold_space:
+        started = time.perf_counter()
         recorded = _record_hold_space(WAVE_OUTPUT_FILENAME, interrupt_event=interrupt_event)
+        log_timing("record_hold_space", (time.perf_counter() - started) * 1000, mode="hold_space", recorded=bool(recorded))
         if not recorded:
             return ""
     else:
+        started = time.perf_counter()
         recorded = _record_until_silence(WAVE_OUTPUT_FILENAME, interrupt_event=interrupt_event)
+        log_timing("record_until_silence", (time.perf_counter() - started) * 1000, mode="followup", recorded=bool(recorded))
         if not recorded:
             return ""
 
     try:
         if STT_PROVIDER == "groq":
-            return _transcribe_with_groq(WAVE_OUTPUT_FILENAME)
-        return _transcribe_with_faster_whisper(WAVE_OUTPUT_FILENAME)
+            text = _transcribe_with_groq(WAVE_OUTPUT_FILENAME)
+        else:
+            text = _transcribe_with_faster_whisper(WAVE_OUTPUT_FILENAME)
+        log_event("transcription_complete", provider=STT_PROVIDER, chars=len(text or ""))
+        return text
     except Exception as exc:
+        log_event("transcription_error", provider=STT_PROVIDER, error=str(exc))
         if STT_PROVIDER != "groq" and os.getenv("GROQ_API_KEY"):
             print(f"Local Whisper failed, trying Groq fallback: {exc}")
             return _transcribe_with_groq(WAVE_OUTPUT_FILENAME)

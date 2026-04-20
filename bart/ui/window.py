@@ -63,6 +63,7 @@ class BartWindow(QMainWindow):
         super().__init__()
         self._drag_pos = QPoint()
         self._current_state = BartState.IDLE
+        self._assistant_enabled = True
         self._weather_text = ""
 
         self.setWindowFlags(
@@ -81,6 +82,7 @@ class BartWindow(QMainWindow):
         # Worker
         self._worker = BartWorker()
         self._worker.state_changed.connect(self._on_state_changed)
+        self._worker.enabled_changed.connect(self._on_enabled_changed)
         self._worker.transcript_ready.connect(self._on_transcript)
         self._worker.reply_ready.connect(self._on_reply)
         self._worker.shutdown_complete.connect(self._on_shutdown)
@@ -211,11 +213,19 @@ class BartWindow(QMainWindow):
         stop_btn.setObjectName("stop_btn")
         stop_btn.clicked.connect(self._on_stop_clicked)
         stop_btn.setFixedHeight(34)
-        stop_btn.setFixedWidth(90)
+        stop_btn.setFixedWidth(82)
         stop_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        self._toggle_btn = QPushButton("DISABLE")
+        self._toggle_btn.setObjectName("toggle_btn")
+        self._toggle_btn.clicked.connect(self._on_toggle_clicked)
+        self._toggle_btn.setFixedHeight(34)
+        self._toggle_btn.setFixedWidth(92)
+        self._toggle_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         lay.addWidget(space_btn)
         lay.addWidget(stop_btn)
+        lay.addWidget(self._toggle_btn)
         return widget
 
     def _make_separator(self) -> QWidget:
@@ -352,6 +362,35 @@ class BartWindow(QMainWindow):
                 background: #ff6b6b;
                 color: #0d0d0d;
             }}
+            QPushButton#toggle_btn {{
+                background: #1e1e1e;
+                color: #ffd93d;
+                border: 1px solid #3a3a3a;
+                border-radius: 6px;
+                font-family: Consolas, monospace;
+                font-size: 11px;
+                letter-spacing: 1px;
+            }}
+            QPushButton#toggle_btn:hover {{
+                background: #252525;
+                border-color: #ffd93d;
+            }}
+            QPushButton#toggle_btn:pressed {{
+                background: #ffd93d;
+                color: #0d0d0d;
+            }}
+            QPushButton#toggle_btn[assistantEnabled="false"] {{
+                color: #6bcb77;
+                border-color: #6bcb77;
+            }}
+            QPushButton#toggle_btn[assistantEnabled="false"]:hover {{
+                background: #252525;
+                border-color: #6bcb77;
+            }}
+            QPushButton#toggle_btn[assistantEnabled="false"]:pressed {{
+                background: #6bcb77;
+                color: #0d0d0d;
+            }}
         """)
 
     # ------------------------------------------------------------------
@@ -382,12 +421,18 @@ class BartWindow(QMainWindow):
 
     def _on_space_clicked(self):
         """Simulate a SPACE press so the worker triggers listen."""
+        if not self._assistant_enabled:
+            self._bart_label.setText("Bart: disabled right now.")
+            return
         import keyboard
         keyboard.press_and_release("space")
 
     def _on_stop_clicked(self):
         """Interrupt Bart mid-sentence. Exchange is NOT saved to memory."""
         self._worker.interrupt()
+
+    def _on_toggle_clicked(self):
+        self._worker.toggle_enabled()
 
     # ------------------------------------------------------------------
     # Worker signals
@@ -399,7 +444,7 @@ class BartWindow(QMainWindow):
         self._waveform.set_state(state)
 
         color = _STATE_COLORS.get(state, "#ffffff")
-        hint = _STATE_HINTS.get(state, "")
+        hint = "disabled" if not self._assistant_enabled else _STATE_HINTS.get(state, "")
         self._state_label.setText(hint)
         self._state_label.setStyleSheet(
             f"color: {color}; background: {_SURFACE}; "
@@ -410,6 +455,15 @@ class BartWindow(QMainWindow):
         dot = self.findChild(QLabel, "dot")
         if dot:
             dot.setStyleSheet(f"color: {color}; font-size: 11px;")
+
+    @pyqtSlot(bool)
+    def _on_enabled_changed(self, enabled: bool):
+        self._assistant_enabled = enabled
+        self._toggle_btn.setText("DISABLE" if enabled else "ENABLE")
+        self._toggle_btn.setProperty("assistantEnabled", enabled)
+        self._toggle_btn.style().unpolish(self._toggle_btn)
+        self._toggle_btn.style().polish(self._toggle_btn)
+        self._on_state_changed(self._current_state if enabled else BartState.IDLE)
 
     @pyqtSlot(str)
     def _on_transcript(self, text: str):
